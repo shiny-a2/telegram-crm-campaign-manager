@@ -28,6 +28,12 @@ import config
 import db
 
 
+def _mask(s):
+    """شماره را در لاگ ماسک می‌کند (PII روی دیسک نماند)."""
+    d = "".join(ch for ch in str(s or "") if ch.isdigit())
+    return ("***" + d[-4:]) if len(d) >= 4 else str(s or "")
+
+
 def _disp_name(u):
     nm = (getattr(u, "first_name", "") or "").strip()
     ln = (getattr(u, "last_name", "") or "").strip()
@@ -131,7 +137,7 @@ async def _send_one(client, contact):
     try:
         await client.send_message(user, text)
         db.mark_contact(contact["id"], "sent", None, tpl["id"], label, name)
-        print(f"[sender] ارسال شد → {label}")
+        print(f"[sender] ارسال شد → {_mask(label)}")
         ok = True
     except FloodWaitError as e:
         print(f"[sender] FloodWait {e.seconds}s (send) — صبر می‌کنیم")

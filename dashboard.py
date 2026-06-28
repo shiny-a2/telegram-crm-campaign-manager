@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import urllib.request
 
@@ -31,7 +32,7 @@ def _authed(request: Request):
         or request.cookies.get("dash_token")
         or request.headers.get("X-Dash-Token")
     )
-    return tok == config.DASH_TOKEN
+    return hmac.compare_digest(str(tok or ""), str(config.DASH_TOKEN or ""))
 
 
 def _guard(request: Request):
@@ -104,7 +105,7 @@ async def home(request: Request):
         return HTMLResponse(_LOGIN_HTML)
     resp = HTMLResponse(_DASH_HTML)
     tok = request.query_params.get("token")
-    if tok and tok == config.DASH_TOKEN:
+    if tok and hmac.compare_digest(str(tok), str(config.DASH_TOKEN or "")):
         resp.set_cookie("dash_token", tok, httponly=True, samesite="lax")
     return resp
 
