@@ -1,0 +1,8 @@
+phone_primary,first_name,last_name,consent_status
+09121234567,علی,رضایی,optin
+09351234568,سارا,محمدی,optin
+0912 345 6789,,,optin
+00989121234500,نگار,کریمی,optin
+09121234599,حسن,اکبری,optout
+9123334455,مریم,حسینی,optin
+invalid-row,بدون,شماره,optin
