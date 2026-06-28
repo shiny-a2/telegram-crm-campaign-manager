@@ -4,6 +4,10 @@
 
 Designed for **responsible, consent-based customer engagement** — not blasting. Every delivery policy in this project exists to keep volume low, human-paced, and respectful of recipients and of Telegram's limits.
 
+**What this demonstrates:** async Python · rate-limiting, backoff & flood-control · a small data pipeline (CSV import, phone normalization, dedup, consent) · a live FastAPI control dashboard · self-healing supervisor process.
+
+`Python` · `Telethon` · `FastAPI` · `SQLite` · `asyncio`
+
 ---
 
 ## Responsible-use design
@@ -46,6 +50,17 @@ Use it for legitimate customer communication and follow local regulations on ele
 ```
 
 `main.py` is a self-healing supervisor that runs the sender and the dashboard together and restarts them on failure.
+
+### Dashboard (sketch)
+
+```
+  Progress   ██████████████░░░░░░░░░░   58%   (5,640 / 9,698)
+  ─────────────────────────────────────────────────────────
+  Sent today   312 / 400 cap      Seen        3,110
+  Engine       ● running          Failed         12
+  ─────────────────────────────────────────────────────────
+  [ Start ]  [ Pause ]      6 templates · next send ~47s
+```
 
 ---
 
