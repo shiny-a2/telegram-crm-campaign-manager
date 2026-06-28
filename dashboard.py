@@ -20,7 +20,7 @@ def _bot_stats_sync():
     except Exception:
         return {"bot_users": 0, "bot_started": 0}
 
-app = FastAPI(title="Javaherian Outreach Dashboard")
+app = FastAPI(title="Store Outreach Dashboard")
 
 
 def _authed(request: Request):
@@ -227,7 +227,7 @@ async function load(){
 
   // وضعیت موتور
   const lbl = STATE_LABEL[s.state] || ['نامشخص','b-pause'];
-  const b = document.getElementById('statebadge'); b.textContent = lbl[0]; b.className = 'badge '+lbl[1];
+  const sb = document.getElementById('statebadge'); sb.textContent = lbl[0]; sb.className = 'badge '+lbl[1];
   document.getElementById('statereason').textContent = s.paused_reason || '';
 
   // متن‌ها
