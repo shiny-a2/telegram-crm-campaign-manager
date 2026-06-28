@@ -93,6 +93,14 @@ def init():
             """
         )
         c.commit()
+        # مهاجرت: ستون‌های مخاطبینِ کانتکت/چتِ خودِ اکانت
+        cols = [r["name"] for r in c.execute("PRAGMA table_info(contacts)").fetchall()]
+        if "tg_id" not in cols:
+            c.execute("ALTER TABLE contacts ADD COLUMN tg_id INTEGER")
+        if "source" not in cols:
+            c.execute("ALTER TABLE contacts ADD COLUMN source TEXT DEFAULT 'crm'")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_contacts_tgid ON contacts(tg_id)")
+        c.commit()
         # بذرِ قالب‌های پیش‌فرض اگر خالی بود
         n = c.execute("SELECT COUNT(*) AS n FROM templates").fetchone()["n"]
         if not n:
@@ -272,6 +280,35 @@ def import_contacts(rows):
     return added, updated, optout, skipped
 
 
+def add_account_contact(tg_id, phone, name, source):
+    """مخاطبِ کانتکت/چتِ خودِ اکانت را به انتهای صف اضافه می‌کند (دِدوپ با tg_id یا ۱۰ رقمِ آخرِ شماره).
+
+    خروجی: True اگر تازه اضافه شد. این‌ها در دیتابیس می‌مانند و سری بعد هم قابل‌استفاده‌اند.
+    """
+    if not tg_id:
+        return False
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    pstore = ("+" + digits) if digits else None
+    last10 = digits[-10:] if len(digits) >= 10 else None
+    with _LOCK:
+        c = conn()
+        if last10:
+            ex = c.execute("SELECT id FROM contacts WHERE tg_id=? OR phone LIKE ?", (tg_id, "%" + last10)).fetchone()
+        else:
+            ex = c.execute("SELECT id FROM contacts WHERE tg_id=?", (tg_id,)).fetchone()
+        if ex:
+            return False
+        try:
+            c.execute(
+                "INSERT INTO contacts(phone,name,tg_id,source,status,created_at) VALUES(?,?,?,?, 'pending', ?)",
+                (pstore, (name or "").strip(), int(tg_id), source, now_str()),
+            )
+            c.commit()
+        except sqlite3.IntegrityError:
+            return False
+    return True
+
+
 def next_pending():
     row = conn().execute(
         "SELECT * FROM contacts WHERE status='pending' ORDER BY id LIMIT 1"
@@ -347,6 +384,7 @@ def stats():
         "paused_reason": get_meta("paused_reason", ""),
         "last_send_at": get_meta("last_send_at", ""),
         "seen": seen_count(),
+        "account": c.execute("SELECT COUNT(*) AS n FROM contacts WHERE tg_id IS NOT NULL").fetchone()["n"],
     }
 
 

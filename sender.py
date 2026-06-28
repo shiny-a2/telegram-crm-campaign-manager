@@ -17,11 +17,52 @@ from telethon.errors import (
     PhoneNumberBannedError,
     UserPrivacyRestrictedError,
 )
-from telethon.tl.functions.contacts import DeleteContactsRequest, ImportContactsRequest
-from telethon.tl.types import InputPhoneContact
+from telethon.tl.functions.contacts import (
+    DeleteContactsRequest,
+    GetContactsRequest,
+    ImportContactsRequest,
+)
+from telethon.tl.types import InputPhoneContact, User
 
 import config
 import db
+
+
+def _disp_name(u):
+    nm = (getattr(u, "first_name", "") or "").strip()
+    ln = (getattr(u, "last_name", "") or "").strip()
+    full = (nm + " " + ln).strip()
+    return full or (getattr(u, "username", "") or "")
+
+
+async def _harvest_account_recipients(client):
+    """شماره‌ها/آیدی‌هایی که در کانتکتِ اکانت‌اند یا در چت‌ها هستند (و قبلاً پیام نخورده‌اند)
+    را به انتهای صف اضافه می‌کند تا برایشان هم پیام برود. در دیتابیس می‌مانند (سری بعد هم قابل‌استفاده)."""
+    added = 0
+    # ۱) کانتکت‌های دفترچهٔ اکانت
+    try:
+        res = await client(GetContactsRequest(hash=0))
+        for u in getattr(res, "users", []) or []:
+            if not isinstance(u, User) or getattr(u, "bot", False) or getattr(u, "is_self", False):
+                continue
+            if db.add_account_contact(u.id, getattr(u, "phone", None), _disp_name(u), "contact"):
+                added += 1
+    except Exception as e:  # noqa: BLE001
+        print(f"[harvest] خواندنِ کانتکت‌ها ناموفق: {type(e).__name__}: {e}")
+    # ۲) طرف‌های گفتگوهای خصوصی (dialogs)
+    try:
+        async for d in client.iter_dialogs():
+            if not getattr(d, "is_user", False):
+                continue
+            u = d.entity
+            if not isinstance(u, User) or getattr(u, "bot", False) or getattr(u, "is_self", False):
+                continue
+            if db.add_account_contact(u.id, getattr(u, "phone", None), _disp_name(u), "chat"):
+                added += 1
+    except Exception as e:  # noqa: BLE001
+        print(f"[harvest] خواندنِ چت‌ها ناموفق: {type(e).__name__}: {e}")
+    print(f"[harvest] {added} مخاطبِ تازه از کانتکت/چتِ اکانت به انتهای صف اضافه شد")
+    return added
 
 _TEHRAN = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
 
@@ -41,38 +82,56 @@ async def _send_one(client, contact):
     """تلاش برای ارسال به یک مخاطب. خروجی: True اگر ارسال شمرده شد (موفق/قطعی)."""
     phone = contact["phone"]
     crm_name = contact["name"] or ""
+    tg_id = contact.get("tg_id")
+    label = phone or (f"id:{tg_id}" if tg_id else "?")
     tpl = db.pick_template()
     if not tpl:
         _pause("هیچ قالب فعالی وجود ندارد")
         return False
 
-    try:
-        res = await client(ImportContactsRequest(
-            [InputPhoneContact(client_id=0, phone=phone, first_name=(crm_name or "مشتری")[:60], last_name="")]
-        ))
-    except FloodWaitError as e:
-        print(f"[sender] FloodWait {e.seconds}s (import) — صبر می‌کنیم")
-        await asyncio.sleep(e.seconds + 5)
-        return False
-    except PeerFloodError:
-        db.set_meta("paused_reason", "PeerFlood — تلگرام ارسال انبوه را محدود کرد")
-        _pause("PeerFlood — تلگرام ارسال انبوه را محدود کرد؛ چند روز استراحت لازم است")
-        return False
+    # گیرنده را پیدا کن: مخاطبِ کانتکت/چت با tg_id (warm، بدونِ ImportContacts) یا با شماره
+    user = None
+    imported_now = False
+    if tg_id:
+        try:
+            user = await client.get_entity(int(tg_id))
+        except FloodWaitError as e:
+            print(f"[sender] FloodWait {e.seconds}s (entity) — صبر می‌کنیم")
+            await asyncio.sleep(e.seconds + 5)
+            return False
+        except Exception:  # noqa: BLE001
+            user = None
+        if user is None:
+            db.mark_contact(contact["id"], "no_telegram", "entity (کانتکت/چت) در دسترس نبود", tpl["id"], label, crm_name)
+            return True
+    else:
+        try:
+            res = await client(ImportContactsRequest(
+                [InputPhoneContact(client_id=0, phone=phone, first_name=(crm_name or "مشتری")[:60], last_name="")]
+            ))
+            imported_now = True
+        except FloodWaitError as e:
+            print(f"[sender] FloodWait {e.seconds}s (import) — صبر می‌کنیم")
+            await asyncio.sleep(e.seconds + 5)
+            return False
+        except PeerFloodError:
+            db.set_meta("paused_reason", "PeerFlood — تلگرام ارسال انبوه را محدود کرد")
+            _pause("PeerFlood — تلگرام ارسال انبوه را محدود کرد؛ چند روز استراحت لازم است")
+            return False
+        if not res.users:
+            # یعنی با شماره resolve نشد — یا تلگرام ندارد، یا (اغلب) privacyِ «پیدا‌شدن با شماره» محدود است.
+            db.mark_contact(contact["id"], "no_telegram", "با شماره پیدا نشد (تلگرام ندارد یا privacy)", tpl["id"], phone, crm_name)
+            return True
+        user = res.users[0]
 
-    if not res.users:
-        # توجه: یعنی با شماره resolve نشد — یا تلگرام ندارد، یا (اغلب) privacyِ «پیدا‌شدن با شماره» محدود است.
-        db.mark_contact(contact["id"], "no_telegram", "با شماره پیدا نشد (تلگرام ندارد یا privacy)", tpl["id"], phone, crm_name)
-        return True
-
-    user = res.users[0]
     # نامِ پیام = نامِ تلگرامیِ خودِ شخص (اگر نبود، نام CRM)
     tg_name = (getattr(user, "first_name", "") or "").strip()
     name = tg_name or crm_name
     text = db.render(tpl["body"], name)
     try:
         await client.send_message(user, text)
-        db.mark_contact(contact["id"], "sent", None, tpl["id"], phone, name)
-        print(f"[sender] ارسال شد → {phone}")
+        db.mark_contact(contact["id"], "sent", None, tpl["id"], label, name)
+        print(f"[sender] ارسال شد → {label}")
         ok = True
     except FloodWaitError as e:
         print(f"[sender] FloodWait {e.seconds}s (send) — صبر می‌کنیم")
@@ -82,17 +141,18 @@ async def _send_one(client, contact):
         _pause("PeerFlood — تلگرام ارسال انبوه را محدود کرد؛ چند روز استراحت لازم است")
         ok = False
     except UserPrivacyRestrictedError:
-        db.mark_contact(contact["id"], "failed", "privacy — کاربر پیام از غریبه نمی‌گیرد", tpl["id"], phone, name)
+        db.mark_contact(contact["id"], "failed", "privacy — کاربر پیام از غریبه نمی‌گیرد", tpl["id"], label, name)
         ok = True
     except PhoneNumberBannedError:
         _pause("شماره‌ی ارسال‌کننده بن شده است")
         ok = False
     except Exception as e:  # noqa: BLE001
-        db.mark_contact(contact["id"], "failed", f"{type(e).__name__}: {e}", tpl["id"], phone, name)
+        db.mark_contact(contact["id"], "failed", f"{type(e).__name__}: {e}", tpl["id"], label, name)
         ok = True
 
-    # به‌خواستِ کاربر مخاطب در دفترچه می‌ماند (سیو می‌شود)؛ فقط اگر KEEP_CONTACTS خاموش بود پاک کن
-    if not config.KEEP_CONTACTS:
+    # فقط مخاطبی که همین حالا با شماره وارد کردیم را (در صورت خاموش‌بودنِ KEEP) پاک کن؛
+    # کانتکت/چتِ خودِ اکانت را هرگز پاک نکن.
+    if imported_now and not config.KEEP_CONTACTS:
         try:
             await client(DeleteContactsRequest([user.id]))
         except Exception:
@@ -124,6 +184,12 @@ async def run():
     db.set_meta("tg_authorized", "1")
     me = await client.get_me()
     print(f"[sender] وارد شد به‌عنوان: {getattr(me, 'first_name', '')} ({getattr(me, 'phone', '')})")
+
+    # مخاطبینِ کانتکت/چتِ خودِ اکانت را هم به انتهای صف اضافه کن (warm، deduped، ماندگار)
+    try:
+        await _harvest_account_recipients(client)
+    except Exception as e:  # noqa: BLE001
+        print(f"[harvest] ناموفق: {type(e).__name__}: {e}")
 
     @client.on(events.MessageRead(inbox=False))
     async def _on_read(event):  # وقتی گیرنده پیام ما را خواند (سین)

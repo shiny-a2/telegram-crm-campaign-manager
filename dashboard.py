@@ -245,6 +245,7 @@ async function load(){
   const b = r.bot || {};
   const cards=[['کل مخاطبین',s.total,'gold'],['ارسال‌شده',s.sent,'green'],['سین‌شده',s.seen||0,'gold'],['در صف',s.pending,'gray'],
     ['عضو ربات',b.bot_started||0,'green'],['کاربران فعال',b.bot_users||0,'green'],
+    ['از کانتکت/چت',s.account||0,'gold'],
     ['ناموفق',s.failed,'red'],['با شماره پیدا نشد',s.no_telegram,'gray'],['انصراف',s.optout,'gray']];
   document.getElementById('cards').innerHTML = cards.map(c=>
     `<div class="card"><div class="n ${c[2]}">${c[1].toLocaleString('fa')}</div><div class="l">${c[0]}</div></div>`).join('');
