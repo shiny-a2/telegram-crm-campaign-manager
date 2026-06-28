@@ -60,7 +60,8 @@ async def _send_one(client, contact):
         return False
 
     if not res.users:
-        db.mark_contact(contact["id"], "no_telegram", "بدون حساب تلگرام", tpl["id"], phone, crm_name)
+        # توجه: یعنی با شماره resolve نشد — یا تلگرام ندارد، یا (اغلب) privacyِ «پیدا‌شدن با شماره» محدود است.
+        db.mark_contact(contact["id"], "no_telegram", "با شماره پیدا نشد (تلگرام ندارد یا privacy)", tpl["id"], phone, crm_name)
         return True
 
     user = res.users[0]

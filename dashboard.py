@@ -197,7 +197,7 @@ th{color:var(--mut);font-weight:normal}
 
 <script>
 const STATE_LABEL = {running:['در حال ارسال','b-run'], paused:['متوقف','b-pause']};
-const ST_FA = {sent:'ارسال شد',failed:'ناموفق',no_telegram:'بدون تلگرام',optout:'انصراف',pending:'در صف'};
+const ST_FA = {sent:'ارسال شد',failed:'ناموفق',no_telegram:'با شماره پیدا نشد',optout:'انصراف',pending:'در صف'};
 function esc(s){var d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML;}
 
 async function load(){
@@ -216,7 +216,7 @@ async function load(){
   const b = r.bot || {};
   const cards=[['کل مخاطبین',s.total,'gold'],['ارسال‌شده',s.sent,'green'],['سین‌شده',s.seen||0,'gold'],['در صف',s.pending,'gray'],
     ['عضو ربات',b.bot_started||0,'green'],['کاربران فعال',b.bot_users||0,'green'],
-    ['ناموفق',s.failed,'red'],['بدون تلگرام',s.no_telegram,'gray'],['انصراف',s.optout,'gray']];
+    ['ناموفق',s.failed,'red'],['با شماره پیدا نشد',s.no_telegram,'gray'],['انصراف',s.optout,'gray']];
   document.getElementById('cards').innerHTML = cards.map(c=>
     `<div class="card"><div class="n ${c[2]}">${c[1].toLocaleString('fa')}</div><div class="l">${c[0]}</div></div>`).join('');
 
