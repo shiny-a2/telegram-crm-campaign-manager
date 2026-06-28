@@ -53,7 +53,17 @@ async def api_state(request: Request):
         "telegram_authorized": db.get_meta("tg_authorized", "0") == "1",
         "telegram_ready": config.telegram_ready(),
         "bot": bot,
+        "settings": db.current_settings(),
     }
+
+
+@app.post("/api/settings")
+async def api_settings(request: Request):
+    g = _guard(request)
+    if g:
+        return g
+    body = await request.json()
+    return {"ok": True, "settings": db.save_settings(body)}
 
 
 @app.post("/api/control")
@@ -150,6 +160,8 @@ table{width:100%;border-collapse:collapse;font-size:12px}
 th,td{text-align:right;padding:7px 6px;border-bottom:1px solid var(--bd)}
 th{color:var(--mut);font-weight:normal}
 .warn{background:#4a1d1d;color:#ef8a7e;padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:12px}
+.fld{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mut)}
+.fld input{width:130px;padding:8px;border-radius:8px;border:1px solid var(--bd);background:#0e0e10;color:#eee;font-family:inherit;font-size:14px}
 </style></head>
 <body>
 <h1>📡 داشبورد پیام‌رسانی نمونه</h1>
@@ -183,6 +195,21 @@ th{color:var(--mut);font-weight:normal}
 </div>
 
 <div class="sec">
+  <h2>تنظیماتِ سرعتِ ارسال (زنده)</h2>
+  <div class="row" style="gap:14px;flex-wrap:wrap">
+    <label class="fld">تعداد پیام در هر بازه<input id="set_burst" type="number" min="1"></label>
+    <label class="fld">فاصلهٔ بین پیام‌ها — کمینه (ثانیه)<input id="set_dmin" type="number" min="5"></label>
+    <label class="fld">فاصلهٔ بین پیام‌ها — بیشینه (ثانیه)<input id="set_dmax" type="number" min="5"></label>
+    <label class="fld">استراحتِ بین بازه‌ها (دقیقه)<input id="set_pause" type="number" min="0"></label>
+    <label class="fld">سقفِ پیام در روز<input id="set_cap" type="number" min="1"></label>
+  </div>
+  <div style="margin-top:10px">
+    <button class="btn-sm" style="background:var(--gold);color:#111" onclick="saveSettings()">💾 ذخیرهٔ تنظیمات</button>
+    <span id="set_msg" class="gray" style="margin-right:10px;font-size:12px"></span>
+  </div>
+</div>
+
+<div class="sec">
   <h2>متن‌های پیام (چرخشی)</h2>
   <div id="tpls"></div>
   <textarea id="newtpl" placeholder="متن جدید... (می‌تونی {name} بذاری تا با نام مخاطب جایگزین شه)"></textarea>
@@ -198,6 +225,8 @@ th{color:var(--mut);font-weight:normal}
 <script>
 const STATE_LABEL = {running:['در حال ارسال','b-run'], paused:['متوقف','b-pause']};
 const ST_FA = {sent:'ارسال شد',failed:'ناموفق',no_telegram:'با شماره پیدا نشد',optout:'انصراف',pending:'در صف'};
+const SET_MAP = {set_burst:'burst_size',set_dmin:'delay_min',set_dmax:'delay_max',set_pause:'burst_pause_min',set_cap:'daily_cap'};
+let setLoaded=false;
 function esc(s){var d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML;}
 
 async function load(){
@@ -241,7 +270,23 @@ async function load(){
   document.getElementById('recent').innerHTML = r.recent.map(x=>
     `<tr><td>${esc(x.phone)}</td><td>${esc(x.name)}</td><td>${ST_FA[x.status]||esc(x.status)}${x.error?' · <span class="gray">'+esc(x.error)+'</span>':''}</td><td class="gray">${esc(x.created_at)}</td></tr>`).join('') || '<tr><td colspan="4" class="gray">هنوز ارسالی نبوده.</td></tr>';
 
+  // تنظیماتِ سرعت: فقط یک‌بار پر کن تا تایپِ کاربر را خراب نکند
+  if(!setLoaded && r.settings){
+    for(const id in SET_MAP){ const el=document.getElementById(id); if(el) el.value=r.settings[SET_MAP[id]]; }
+    setLoaded=true;
+  }
+
   document.getElementById('clock').textContent = 'به‌روزرسانی: ' + new Date().toLocaleTimeString('fa');
+}
+async function saveSettings(){
+  const body={};
+  for(const id in SET_MAP){ body[SET_MAP[id]] = +document.getElementById(id).value; }
+  const msg=document.getElementById('set_msg'); msg.textContent='در حال ذخیره…';
+  try{
+    const j=await (await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+    if(j.settings){ for(const id in SET_MAP){ document.getElementById(id).value=j.settings[SET_MAP[id]]; } }
+    msg.textContent='✅ ذخیره شد — بلافاصله اعمال می‌شود';
+  }catch(e){ msg.textContent='خطا در ذخیره'; }
 }
 async function ctrl(a){ await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:a})}); load(); }
 async function addTpl(){ const t=document.getElementById('newtpl'); if(!t.value.trim())return; await fetch('/api/template',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'add',body:t.value})}); t.value=''; load(); }

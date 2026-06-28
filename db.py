@@ -148,11 +148,48 @@ def ensure_today():
 def today_cap():
     day = max(1, _int_meta("warming_day", 1))
     cap = config.WARMUP_START + config.WARMUP_STEP * (day - 1)
-    return min(config.DAILY_CAP, cap)
+    return min(setting_int("daily_cap", config.DAILY_CAP), cap)
 
 
 def sent_today():
     return _int_meta("sent_today", 0)
+
+
+# ---------- تنظیماتِ زنده‌ی سرعت (قابل ویرایش از داشبورد؛ بازنویسیِ مقادیرِ .env) ----------
+def setting_int(key, default):
+    v = get_meta("cfg_" + key)
+    try:
+        return int(v) if v not in (None, "") else int(default)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def current_settings():
+    return {
+        "burst_size": setting_int("burst_size", config.BURST_SIZE),
+        "delay_min": setting_int("delay_min", config.DELAY_MIN_SEC),
+        "delay_max": setting_int("delay_max", config.DELAY_MAX_SEC),
+        "burst_pause_min": setting_int("burst_pause_min", config.BURST_PAUSE_MIN),
+        "daily_cap": setting_int("daily_cap", config.DAILY_CAP),
+    }
+
+
+def save_settings(d):
+    bounds = {
+        "burst_size": (1, 1000), "delay_min": (5, 3600), "delay_max": (5, 7200),
+        "burst_pause_min": (0, 1440), "daily_cap": (1, 100000),
+    }
+    for k, (lo, hi) in bounds.items():
+        if k in d and d[k] not in (None, ""):
+            try:
+                v = int(d[k])
+            except (TypeError, ValueError):
+                continue
+            set_meta("cfg_" + k, max(lo, min(hi, v)))
+    s = current_settings()  # تضمین: حداکثرِ فاصله کمتر از حداقل نشود
+    if s["delay_max"] < s["delay_min"]:
+        set_meta("cfg_delay_max", s["delay_min"])
+    return current_settings()
 
 
 # ---------- قالب‌ها ----------

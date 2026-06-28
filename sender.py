@@ -145,11 +145,13 @@ async def run():
             if db.sent_today() >= db.today_cap():
                 await asyncio.sleep(60)
                 continue
-            # پایان بازه → استراحت
-            if burst >= config.BURST_SIZE:
-                print(f"[sender] بازه‌ی {config.BURST_SIZE}تایی تمام شد — {config.BURST_PAUSE_MIN} دقیقه استراحت")
-                db.set_meta("paused_reason", f"استراحتِ بین‌بازه‌ای ({config.BURST_PAUSE_MIN} دقیقه)")
-                await asyncio.sleep(config.BURST_PAUSE_MIN * 60)
+            # پایان بازه → استراحت (تنظیماتِ زنده از داشبورد)
+            burst_size = db.setting_int("burst_size", config.BURST_SIZE)
+            if burst >= burst_size:
+                pause_min = db.setting_int("burst_pause_min", config.BURST_PAUSE_MIN)
+                print(f"[sender] بازه‌ی {burst_size}تایی تمام شد — {pause_min} دقیقه استراحت")
+                db.set_meta("paused_reason", f"استراحتِ بین‌بازه‌ای ({pause_min} دقیقه)")
+                await asyncio.sleep(pause_min * 60)
                 db.set_meta("paused_reason", "")
                 burst = 0
                 continue
@@ -161,8 +163,10 @@ async def run():
             counted = await _send_one(client, contact)
             if counted:
                 burst += 1
-                # تأخیر انسانیِ تصادفی فقط بعد از یک اقدام واقعی
-                delay = random.randint(config.DELAY_MIN_SEC, config.DELAY_MAX_SEC)
+                # تأخیر انسانیِ تصادفی فقط بعد از یک اقدام واقعی (تنظیماتِ زنده)
+                dmin = db.setting_int("delay_min", config.DELAY_MIN_SEC)
+                dmax = db.setting_int("delay_max", config.DELAY_MAX_SEC)
+                delay = random.randint(dmin, max(dmin, dmax))
                 await asyncio.sleep(delay)
             else:
                 await asyncio.sleep(5)
