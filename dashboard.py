@@ -77,6 +77,18 @@ async def api_export_no_telegram(request: Request):
     return FileResponse(path, filename="no_telegram.csv", media_type="text/csv")
 
 
+@app.post("/api/notify")
+async def api_notify(request: Request):
+    """مغز نتیجهٔ تاییدِ رسید را اینجا می‌فرستد تا به مشتری در همین یوزربات اعلام شود (با توکنِ مغز)."""
+    tok = request.headers.get("X-SB-Token") or request.query_params.get("token")
+    if not config.SALE_BRAIN_TOKEN or not hmac.compare_digest(str(tok or ""), str(config.SALE_BRAIN_TOKEN)):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    body = await request.json()
+    import autoreply
+    ok = await autoreply.notify(body.get("customer_id"), body.get("text"))
+    return {"ok": bool(ok)}
+
+
 @app.post("/api/settings")
 async def api_settings(request: Request):
     g = _guard(request)

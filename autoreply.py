@@ -27,6 +27,7 @@ _pending = {}            # chat_id → asyncio.Task (پاسخِ زمان‌بن�
 _bot_recent_send = {}    # chat_id → monotonic زمانِ آخرین ارسالِ خودِ ربات (برای تشخیص از اپراتور)
 _operator_active = {}    # chat_id → monotonic زمانِ آخرین پیامِ اپراتورِ انسانی (→ حالتِ تأخیری)
 _voice_cache = {}        # message_id → متنِ ترنسکرایب‌شدهٔ وویس (تا دوباره ترنسکرایب نشود)
+_client = None           # کلاینتِ Telethon (برای notifyِ نتیجهٔ رسید از داشبورد)
 
 _FOLLOWUP_TEXT = (
     "سلام مجدد 🌟 از فروشگاهِ نمونه.\n"
@@ -97,9 +98,11 @@ async def _ask_brain(messages, reply_context=None):
         return {}
 
 
-def _post_vision_sync(image_b64, caption, messages):
+def _post_vision_sync(image_b64, caption, messages, customer=None):
     payload = {"image_b64": image_b64, "caption": caption or "", "messages": messages or [],
                "cards_as_text": False}
+    if customer:
+        payload["customer"] = customer
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         _VISION_URL, data=body, method="POST",
@@ -109,12 +112,27 @@ def _post_vision_sync(image_b64, caption, messages):
         return json.loads(r.read().decode("utf-8"))
 
 
-async def _ask_vision(image_b64, caption, messages):
+async def _ask_vision(image_b64, caption, messages, customer=None):
     try:
-        return await asyncio.to_thread(_post_vision_sync, image_b64, caption, messages)
+        return await asyncio.to_thread(_post_vision_sync, image_b64, caption, messages, customer)
     except Exception as e:  # noqa: BLE001
         print(f"[autoreply] خطای vision: {type(e).__name__}: {e}")
         return {}
+
+
+async def notify(customer_id, text):
+    """اعلامِ نتیجهٔ تاییدِ رسید (از مغز) به مشتری در همین یوزربات."""
+    if not (_client and customer_id and text):
+        return False
+    try:
+        cid = int(customer_id)
+        _bot_recent_send[cid] = time.monotonic()
+        await _client.send_message(cid, text, link_preview=False)
+        _bot_recent_send[cid] = time.monotonic()
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[autoreply] notify ناموفق: {type(e).__name__}: {e}")
+        return False
 
 
 async def _download_b64(msg):
@@ -268,7 +286,8 @@ async def _delayed_reply(client, chat_id, name, delay):
                 return
             caption = getattr(last_msg, "message", "") or ""
             ctx_hist = history[:-1] if (history and history[-1]["role"] == "user") else history
-            resp = await _ask_vision(img_b64, caption, ctx_hist)
+            resp = await _ask_vision(img_b64, caption, ctx_hist,
+                                     {"channel": "userbot", "id": str(chat_id), "name": name})
         else:
             reply_ctx = await _reply_card_context(client, chat_id)  # ریپلای‌به‌کارت؟ → همان محصول
             resp = await _ask_brain(history, reply_ctx)
@@ -298,6 +317,8 @@ def _cancel(chat_id):
 
 def register(client):
     """هندلرهای پاسخِ خودکار را روی کلاینتِ سندر ثبت می‌کند."""
+    global _client
+    _client = client  # برای notifyِ نتیجهٔ رسید (از داشبورد فراخوانی می‌شود)
 
     @client.on(events.NewMessage(incoming=True))
     async def _on_incoming(event):
