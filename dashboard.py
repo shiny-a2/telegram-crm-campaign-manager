@@ -26,7 +26,7 @@ app = FastAPI(title="Store Outreach Dashboard")
 
 def _authed(request: Request):
     if not config.DASH_TOKEN:
-        return True
+        return False  # بدونِ توکن، بسته (fail-closed) — تا کنترلِ یوزربات هرگز باز نباشد
     tok = (
         request.query_params.get("token")
         or request.cookies.get("dash_token")
@@ -55,6 +55,10 @@ async def api_state(request: Request):
         "telegram_ready": config.telegram_ready(),
         "bot": bot,
         "settings": db.current_settings(),
+        "autoreply": db.get_meta("autoreply", "off"),
+        "followup": db.get_meta("followup", "off"),
+        "autoreply_today": db.autoreply_today(),
+        "autoreplies": db.recent_autoreplies(15),
     }
 
 
@@ -77,9 +81,18 @@ async def api_control(request: Request):
     if action == "start":
         db.set_meta("sender_state", "running")
         db.set_meta("paused_reason", "")
+        db.set_meta("account_locked", "0")  # شروعِ دستی → قفلِ اکانت هم باز شود
     elif action == "pause":
         db.set_meta("sender_state", "paused")
         db.set_meta("paused_reason", "توقف دستی")
+    elif action == "autoreply_on":
+        db.set_meta("autoreply", "on")
+    elif action == "autoreply_off":
+        db.set_meta("autoreply", "off")
+    elif action == "followup_on":
+        db.set_meta("followup", "on")
+    elif action == "followup_off":
+        db.set_meta("followup", "off")
     return {"ok": True, "state": db.get_meta("sender_state")}
 
 
@@ -97,6 +110,17 @@ async def api_template(request: Request):
     elif action == "delete":
         db.delete_template(int(body.get("id")))
     return {"ok": True, "templates": db.list_templates()}
+
+
+@app.post("/api/tx")
+async def api_tx(request: Request):
+    """افزودنِ یک پیامِ سفارشی به صفِ تراکنشیِ اولویت‌دار (بازیابیِ پرداخت و …)."""
+    g = _guard(request)
+    if g:
+        return g
+    body = await request.json()
+    status = db.tx_enqueue(body.get("phone", ""), body.get("text", ""), body.get("key", ""))
+    return {"ok": True, "added": status == "added", "exists": status == "exists", "status": status, "tx": db.tx_stats()}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -211,6 +235,24 @@ th{color:var(--mut);font-weight:normal}
 </div>
 
 <div class="sec">
+  <h2>پاسخِ خودکارِ دایرکت (مغزِ فروش)</h2>
+  <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:10px">
+    <div class="row" style="gap:12px;flex-wrap:wrap">
+      <span>پاسخِ خودکار: <span id="ar_badge" class="badge b-pause">—</span></span>
+      <button class="btn-go btn-sm" onclick="ctrl('autoreply_on')">روشن</button>
+      <button class="btn-stop btn-sm" onclick="ctrl('autoreply_off')">خاموش</button>
+      <span class="gray">|</span>
+      <span>فالوآپ: <span id="fu_badge" class="badge b-pause">—</span></span>
+      <button class="btn-go btn-sm" onclick="ctrl('followup_on')">روشن</button>
+      <button class="btn-stop btn-sm" onclick="ctrl('followup_off')">خاموش</button>
+    </div>
+    <span class="gray">پاسخِ امروز: <b id="ar_today">0</b></span>
+  </div>
+  <table style="margin-top:12px"><thead><tr><th>کاربر</th><th>پیامِ مشتری</th><th>پاسخِ ربات</th><th>زمان</th></tr></thead>
+  <tbody id="ar_rows"></tbody></table>
+</div>
+
+<div class="sec">
   <h2>متن‌های پیام (چرخشی)</h2>
   <div id="tpls"></div>
   <textarea id="newtpl" placeholder="متن جدید... (می‌تونی {name} بذاری تا با نام مخاطب جایگزین شه)"></textarea>
@@ -277,6 +319,13 @@ async function load(){
     for(const id in SET_MAP){ const el=document.getElementById(id); if(el) el.value=r.settings[SET_MAP[id]]; }
     setLoaded=true;
   }
+
+  // پاسخِ خودکار / فالوآپ
+  const arOn=r.autoreply=='on', fuOn=r.followup=='on';
+  const arb=document.getElementById('ar_badge'); if(arb){arb.textContent=arOn?'روشن':'خاموش';arb.className='badge '+(arOn?'b-run':'b-pause');}
+  const fub=document.getElementById('fu_badge'); if(fub){fub.textContent=fuOn?'روشن':'خاموش';fub.className='badge '+(fuOn?'b-run':'b-pause');}
+  const art=document.getElementById('ar_today'); if(art) art.textContent=(r.autoreply_today||0).toLocaleString('fa');
+  const arr=document.getElementById('ar_rows'); if(arr) arr.innerHTML=(r.autoreplies||[]).map(x=>`<tr><td>${esc(x.name)}</td><td>${esc((x.incoming||'').slice(0,40))}</td><td>${esc((x.reply||'').slice(0,50))}</td><td class="gray">${esc(x.at)}</td></tr>`).join('')||'<tr><td colspan=4 class=gray>هنوز پاسخی نیست.</td></tr>';
 
   document.getElementById('clock').textContent = 'به‌روزرسانی: ' + new Date().toLocaleTimeString('fa');
 }

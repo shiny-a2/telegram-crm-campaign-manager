@@ -26,6 +26,7 @@ from telethon.tl.types import InputPhoneContact, User
 
 import config
 import db
+from importer import normalize_phone
 
 
 def _mask(s):
@@ -81,7 +82,81 @@ def _within_hours():
 def _pause(reason):
     db.set_meta("sender_state", "paused")
     db.set_meta("paused_reason", reason)
+    if "PeerFlood" in reason or "بن" in reason:  # مشکلِ خودِ اکانت → تراکنشی هم متوقف
+        db.set_meta("account_locked", "1")
     print(f"[sender] متوقف شد: {reason}")
+
+
+def _tx_within_hours():
+    h = datetime.datetime.now(_TEHRAN).hour
+    return config.TX_HOUR_START <= h < config.TX_HOUR_END
+
+
+def _tx_allowed():
+    """صفِ تراکنشی مستقل از کمپین است، ولی فقط در ساعتِ مجازِ تراکنشی، با احترام به قفلِ اکانت و سقفِ روزانه."""
+    return (
+        _tx_within_hours()
+        and db.get_meta("tg_authorized") == "1"
+        and db.get_meta("account_locked") != "1"
+        and db.get_meta("tx_off") != "1"
+        and db.sent_today() < db.today_cap()  # تراکنشی هم زیرِ سقفِ روزانه (ضدبلاک)
+    )
+
+
+async def _send_tx_one(client, tx):
+    """ارسالِ یک پیامِ تراکنشیِ سفارشی به یک شماره. خروجی: True اگر قطعی شد (نباید دوباره تلاش)."""
+    phone = normalize_phone(tx["phone"])  # به +98 E.164 (وگرنه Telethon پیدا نمی‌کند)
+    text = tx["text"]
+    if not phone:
+        db.tx_mark(tx["id"], "no_telegram", "شماره‌ی نامعتبر")
+        return True
+    if db.is_optout(phone):  # احترام به انصراف
+        db.tx_mark(tx["id"], "optout", "در لیستِ optout")
+        return True
+    imported_now = False
+    try:
+        res = await client(ImportContactsRequest(
+            [InputPhoneContact(client_id=0, phone=phone, first_name="مشتری", last_name="")]
+        ))
+        imported_now = True
+    except FloodWaitError as e:
+        print(f"[tx] FloodWait {e.seconds}s (import) — صبر می‌کنیم")
+        await asyncio.sleep(e.seconds + 5)
+        return False
+    except PeerFloodError:
+        _pause("PeerFlood — تلگرام ارسال انبوه را محدود کرد؛ چند روز استراحت لازم است")
+        return False
+    if not res.users:
+        db.tx_mark(tx["id"], "no_telegram", "با شماره پیدا نشد (تلگرام ندارد یا privacy)")
+        return True
+    user = res.users[0]
+    try:
+        await client.send_message(user, text)
+        db.tx_mark(tx["id"], "sent")
+        print(f"[tx] ارسال شد → {_mask(phone)}")
+        ok = True
+    except FloodWaitError as e:
+        print(f"[tx] FloodWait {e.seconds}s (send) — صبر می‌کنیم")
+        await asyncio.sleep(e.seconds + 5)
+        ok = False
+    except PeerFloodError:
+        _pause("PeerFlood — تلگرام ارسال انبوه را محدود کرد؛ چند روز استراحت لازم است")
+        ok = False
+    except UserPrivacyRestrictedError:
+        db.tx_mark(tx["id"], "failed", "privacy — کاربر پیام از غریبه نمی‌گیرد")
+        ok = True
+    except PhoneNumberBannedError:
+        _pause("شماره‌ی ارسال‌کننده بن شده است")
+        ok = False
+    except Exception as e:  # noqa: BLE001
+        db.tx_mark(tx["id"], "failed", f"{type(e).__name__}: {e}")
+        ok = True
+    if imported_now and not config.KEEP_CONTACTS:
+        try:
+            await client(DeleteContactsRequest([user.id]))
+        except Exception:
+            pass
+    return ok
 
 
 async def _send_one(client, contact):
@@ -204,10 +279,31 @@ async def run():
         except Exception:
             pass
 
+    # پاسخِ خودکارِ دایرکت با مغزِ فروش + فالوآپِ مشتریانِ بی‌پیگیری (روی همین یوزربات)
+    try:
+        import autoreply
+        autoreply.register(client)
+        asyncio.create_task(autoreply.followup_loop(client))
+    except Exception as e:  # noqa: BLE001
+        print(f"[autoreply] راه‌اندازی ناموفق: {type(e).__name__}: {e}")
+
     burst = 0
     while True:
         try:
             db.ensure_today()
+            # صفِ تراکنشیِ اولویت‌دار (بازیابیِ پرداخت) — مستقل از روشن/خاموشِ کمپین
+            if _tx_allowed():
+                tx = db.tx_next_pending()
+                if tx:
+                    counted = await _send_tx_one(client, tx)
+                    if counted:
+                        # کفِ مستقلِ تراکنشی — سرعتِ پایینِ داشبورد، ارسالِ سردِ بازیابی را پرخطر نکند
+                        dmin = max(db.setting_int("delay_min", config.DELAY_MIN_SEC), config.TX_DELAY_MIN_SEC)
+                        dmax = max(db.setting_int("delay_max", config.DELAY_MAX_SEC), config.TX_DELAY_MAX_SEC)
+                        await asyncio.sleep(random.randint(dmin, max(dmin, dmax)))
+                    else:
+                        await asyncio.sleep(5)
+                    continue
             if db.get_meta("sender_state") != "running":
                 await asyncio.sleep(5)
                 continue

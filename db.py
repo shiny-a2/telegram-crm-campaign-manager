@@ -89,7 +89,28 @@ def init():
             CREATE TABLE IF NOT EXISTS seen (
               chat_id INTEGER PRIMARY KEY
             );
+            CREATE TABLE IF NOT EXISTS tx_queue (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              phone TEXT,
+              tg_id INTEGER,
+              text TEXT,
+              k TEXT UNIQUE,
+              status TEXT DEFAULT 'pending',
+              attempts INTEGER DEFAULT 0,
+              last_error TEXT,
+              created_at TEXT,
+              sent_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS followed_up (
+              chat_id INTEGER PRIMARY KEY,
+              at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS autoreplies (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              chat_id INTEGER, name TEXT, incoming TEXT, reply TEXT, at TEXT
+            );
             CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts(status);
+            CREATE INDEX IF NOT EXISTS idx_tx_status ON tx_queue(status);
             """
         )
         c.commit()
@@ -119,6 +140,44 @@ def init():
         set_meta("today", today_str())
     if get_meta("sent_today") is None:
         set_meta("sent_today", "0")
+    if get_meta("autoreply") is None:
+        set_meta("autoreply", "off")   # پاسخِ خودکارِ دایرکت (از داشبورد روشن کن)
+    if get_meta("followup") is None:
+        set_meta("followup", "off")    # فالوآپِ مشتریانِ بی‌پیگیری
+
+
+# ---------- پاسخِ خودکار / فالوآپ ----------
+def log_autoreply(chat_id, name, incoming, reply):
+    with _LOCK:
+        conn().execute(
+            "INSERT INTO autoreplies(chat_id,name,incoming,reply,at) VALUES(?,?,?,?,?)",
+            (int(chat_id) if chat_id else 0, name or "", (incoming or "")[:500], (reply or "")[:1000], now_str()),
+        )
+        conn().commit()
+    set_meta("last_autoreply_at", now_str())
+
+
+def recent_autoreplies(limit=25):
+    rows = conn().execute(
+        "SELECT name, incoming, reply, at FROM autoreplies ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def autoreply_today():
+    return conn().execute(
+        "SELECT COUNT(*) n FROM autoreplies WHERE at LIKE ?", (today_str() + "%",)
+    ).fetchone()["n"]
+
+
+def is_followed_up(chat_id):
+    return conn().execute("SELECT 1 FROM followed_up WHERE chat_id=?", (int(chat_id),)).fetchone() is not None
+
+
+def mark_followed_up(chat_id):
+    with _LOCK:
+        conn().execute("INSERT OR IGNORE INTO followed_up(chat_id, at) VALUES(?,?)", (int(chat_id), now_str()))
+        conn().commit()
 
 
 # ---------- meta ----------
@@ -151,6 +210,7 @@ def ensure_today():
         set_meta("today", cur)
         set_meta("sent_today", "0")
         set_meta("warming_day", str(_int_meta("warming_day", 1) + 1))
+        set_meta("account_locked", "0")  # هر روز یک فرصتِ تازه؛ اگر هنوز مشکل باشد دوباره قفل می‌شود
 
 
 def today_cap():
@@ -314,6 +374,62 @@ def next_pending():
         "SELECT * FROM contacts WHERE status='pending' ORDER BY id LIMIT 1"
     ).fetchone()
     return dict(row) if row else None
+
+
+# ---------- صفِ تراکنشی (پیام‌های سفارشی با اولویت؛ مثلِ بازیابیِ پرداخت) ----------
+def tx_enqueue(phone, text, key) -> str:
+    """یک پیامِ سفارشی به صفِ تراکنشی اضافه می‌کند (دِدوپ با key). خروجی: 'added' | 'exists' | 'invalid'."""
+    phone = (phone or "").strip()
+    text = (text or "").strip()[:1500]  # سقفِ طول (جلوی بدنه‌ی غول‌آسا)
+    key = (key or "").strip()
+    if not (phone and text and key):
+        return "invalid"
+    with _LOCK:
+        try:
+            conn().execute(
+                "INSERT INTO tx_queue(phone,text,k,status,created_at) VALUES(?,?,?,'pending',?)",
+                (phone, text, key, now_str()),
+            )
+            conn().commit()
+        except sqlite3.IntegrityError:
+            return "exists"  # کلید از قبل صف شده (دِدوپ) — برای فرستنده یعنی «صف‌شده»
+    return "added"
+
+
+def tx_next_pending():
+    row = conn().execute(
+        "SELECT * FROM tx_queue WHERE status='pending' ORDER BY id LIMIT 1"
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def tx_mark(tx_id, status, error=None):
+    with _LOCK:
+        conn().execute(
+            "UPDATE tx_queue SET status=?, attempts=attempts+1, last_error=?, sent_at=? WHERE id=?",
+            (status, error, now_str() if status == "sent" else None, tx_id),
+        )
+        conn().commit()
+    if status == "sent":  # تراکنشی هم در سقفِ روزانه شمرده شود (ضدبلاک)
+        set_meta("sent_today", str(sent_today() + 1))
+        set_meta("last_send_at", now_str())
+
+
+def is_optout(phone) -> bool:
+    """آیا این شماره در لیستِ optout است؟ (تطبیق با ۱۰ رقمِ آخر)"""
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    last10 = digits[-10:] if len(digits) >= 10 else ""
+    if not last10:
+        return False
+    return conn().execute(
+        "SELECT 1 FROM contacts WHERE status='optout' AND phone LIKE ? LIMIT 1", ("%" + last10,)
+    ).fetchone() is not None
+
+
+def tx_stats():
+    return {r["status"]: r["n"] for r in conn().execute(
+        "SELECT status, COUNT(*) AS n FROM tx_queue GROUP BY status"
+    ).fetchall()}
 
 
 def mark_contact(contact_id, status, error=None, template_id=None, phone="", name=""):
