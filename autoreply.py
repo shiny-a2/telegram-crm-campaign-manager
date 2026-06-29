@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime
 import json
 import random
@@ -16,6 +17,7 @@ import urllib.request
 
 from telethon import events
 
+import clock
 import config
 import db
 
@@ -24,6 +26,7 @@ _TEHRAN = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
 _pending = {}            # chat_id → asyncio.Task (پاسخِ زمان‌بندی‌شده)
 _bot_recent_send = {}    # chat_id → monotonic زمانِ آخرین ارسالِ خودِ ربات (برای تشخیص از اپراتور)
 _operator_active = {}    # chat_id → monotonic زمانِ آخرین پیامِ اپراتورِ انسانی (→ حالتِ تأخیری)
+_voice_cache = {}        # message_id → متنِ ترنسکرایب‌شدهٔ وویس (تا دوباره ترنسکرایب نشود)
 
 _FOLLOWUP_TEXT = (
     "سلام مجدد 🌟 از فروشگاهِ نمونه.\n"
@@ -33,22 +36,36 @@ _FOLLOWUP_TEXT = (
 
 
 def _within_hours():
-    h = datetime.datetime.now(_TEHRAN).hour
+    h = clock.tehran_now().hour  # ساعتِ تصحیح‌شده (ساعتِ خودِ سرور ممکن است کج باشد)
     return config.AUTOREPLY_HOUR_START <= h < config.AUTOREPLY_HOUR_END
 
 
 def _within_followup_hours():
-    h = datetime.datetime.now(_TEHRAN).hour
+    h = clock.tehran_now().hour  # ساعتِ تصحیح‌شده
     return config.FOLLOWUP_HOUR_START <= h < config.FOLLOWUP_HOUR_END
 
 
+_TRANSCRIBE_URL = config.BRAIN_CHAT_URL.replace("/api/chat", "/api/transcribe")
+
+
 def _post_brain_sync(messages):
-    body = json.dumps({"messages": messages, "user_prompt": "", "max_tokens": 800}).encode("utf-8")
+    body = json.dumps({"messages": messages, "user_prompt": "", "max_tokens": 800,
+                       "cards_as_text": False}).encode("utf-8")  # کارت‌ها را ساختاریافته بگیر (خودمان عکس می‌فرستیم)
     req = urllib.request.Request(
         config.BRAIN_CHAT_URL, data=body, method="POST",
         headers={"Content-Type": "application/json", "X-SB-Token": config.SALE_BRAIN_TOKEN},
     )
     with urllib.request.urlopen(req, timeout=90) as r:
+        return json.loads(r.read().decode("utf-8"))  # دیکشنریِ کامل: text + cards + ...
+
+
+def _post_transcribe_sync(audio_b64, filename):
+    body = json.dumps({"audio_b64": audio_b64, "filename": filename}).encode("utf-8")
+    req = urllib.request.Request(
+        _TRANSCRIBE_URL, data=body, method="POST",
+        headers={"Content-Type": "application/json", "X-SB-Token": config.SALE_BRAIN_TOKEN},
+    )
+    with urllib.request.urlopen(req, timeout=120) as r:
         return (json.loads(r.read().decode("utf-8")).get("text") or "").strip()
 
 
@@ -57,15 +74,70 @@ async def _ask_brain(messages):
         return await asyncio.to_thread(_post_brain_sync, messages)
     except Exception as e:  # noqa: BLE001
         print(f"[autoreply] خطای مغز: {type(e).__name__}: {e}")
+        return {}
+
+
+async def _transcribe_msg(client, msg):
+    """وویس/صوتِ مشتری را دانلود و با مغز (/api/transcribe، همان Whisper) به متن تبدیل می‌کند."""
+    try:
+        data = await msg.download_media(file=bytes)
+        if not data:
+            return ""
+        b64 = base64.b64encode(data).decode("ascii")
+        return await asyncio.to_thread(_post_transcribe_sync, b64, "voice.ogg")
+    except Exception as e:  # noqa: BLE001
+        print(f"[autoreply] ترنسکرایبِ وویس ناموفق: {type(e).__name__}: {e}")
         return ""
 
 
+def _card_caption(c):
+    """کپشنِ کارتِ محصول (یوزربات دکمهٔ اینلاین ندارد؛ لینک داخلِ کپشن می‌آید)."""
+    lines = ["⌚ " + (c.get("name") or "")]
+    if c.get("on_sale") and c.get("sale_price_label"):
+        reg = c.get("regular_price_label", "")
+        lines.append(f"🔖 {c['sale_price_label']}" + (f" (قبلاً {reg})" if reg else "") + " ✨")
+    elif c.get("price_label"):
+        lines.append("💰 " + c["price_label"])
+    av, ship = c.get("availability", ""), c.get("shipping_time", "")
+    if av or ship:
+        emoji = "⚡" if ship == "ارسال فوری" else "🚚"
+        lines.append(emoji + " " + " · ".join(x for x in (av, ship) if x))
+    if c.get("url"):
+        lines.append("🔗 " + c["url"])
+    return "\n".join(lines)
+
+
+async def _send_card(client, chat_id, c):
+    cap = _card_caption(c)
+    img = c.get("image")
+    _bot_recent_send[chat_id] = time.monotonic()
+    try:
+        if img:
+            await client.send_file(chat_id, file=img, caption=cap)
+        else:
+            await client.send_message(chat_id, cap, link_preview=False)
+    except Exception as e:  # noqa: BLE001
+        print(f"[autoreply] ارسالِ کارت ناموفق: {type(e).__name__}: {e}")
+        try:
+            await client.send_message(chat_id, cap, link_preview=False)  # fallbackِ متنی
+        except Exception:  # noqa: BLE001
+            pass
+    await asyncio.sleep(0.4)  # فاصلهٔ کوچک بین کارت‌ها
+
+
 async def _history(client, chat_id):
-    """چند پیامِ آخرِ گفتگو را به فرمتِ messages مغز می‌سازد (out=assistant، in=user)."""
+    """چند پیامِ آخرِ گفتگو را به فرمتِ messages مغز می‌سازد (out=assistant، in=user).
+
+    وویس/صوتِ مشتری را در همین‌جا به متن تبدیل می‌کند (با کش، تا دوباره ترنسکرایب نشود)."""
     msgs = await client.get_messages(chat_id, limit=config.HISTORY_LIMIT)
     out = []
     for m in reversed(list(msgs)):  # قدیمی‌ترین → جدیدترین
         txt = (getattr(m, "message", None) or getattr(m, "text", None) or "").strip()
+        if not txt and not getattr(m, "out", False) and (getattr(m, "voice", None) or getattr(m, "audio", None)):
+            txt = _voice_cache.get(m.id)
+            if txt is None:
+                txt = await _transcribe_msg(client, m)
+                _voice_cache[m.id] = txt
         if not txt:
             continue
         out.append({"role": "assistant" if getattr(m, "out", False) else "user", "content": txt})
@@ -87,16 +159,21 @@ async def _delayed_reply(client, chat_id, name, delay):
         history = await _history(client, chat_id)
         if not history or history[-1]["role"] != "user":
             return  # آخرین پیام از مشتری نیست (یعنی یک نفر جواب داده)
-        reply = await _ask_brain(history)
-        if not reply:
+        resp = await _ask_brain(history)
+        text = (resp.get("text") or "").strip()
+        cards = resp.get("cards") or []
+        if not text and not cards:
             return
-        if len(reply) > config.MAX_AUTOREPLY_CHARS:
-            reply = reply[: config.MAX_AUTOREPLY_CHARS].rstrip() + " …"
+        if len(text) > config.MAX_AUTOREPLY_CHARS:
+            text = text[: config.MAX_AUTOREPLY_CHARS].rstrip() + " …"
         _bot_recent_send[chat_id] = time.monotonic()
-        await client.send_message(chat_id, reply)
+        if text:
+            await client.send_message(chat_id, text, link_preview=False)
+        for c in cards[:7]:  # کارتِ محصول‌ها را به‌صورت عکس بفرست (مثلِ رباتِ رسمی)
+            await _send_card(client, chat_id, c)
         _bot_recent_send[chat_id] = time.monotonic()
-        db.log_autoreply(chat_id, name, history[-1]["content"], reply)
-        print(f"[autoreply] پاسخ به {name or chat_id}")
+        db.log_autoreply(chat_id, name, history[-1]["content"], text or f"[{len(cards)} کارتِ محصول]")
+        print(f"[autoreply] پاسخ به {name or chat_id} ({len(cards)} کارت)")
     except Exception as e:  # noqa: BLE001
         print(f"[autoreply] ارسالِ پاسخ ناموفق: {type(e).__name__}: {e}")
 
@@ -150,7 +227,7 @@ async def followup_scan(client):
     """گفتگوهای خصوصیِ ساکت با سابقهٔ تعامل را یک‌بار محترمانه پیگیری می‌کند."""
     if db.get_meta("followup") != "on" or not _within_followup_hours() or db.get_meta("account_locked") == "1":
         return 0
-    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=config.FOLLOWUP_AFTER_HOURS)
+    cutoff = clock.utcnow().replace(tzinfo=datetime.timezone.utc) - datetime.timedelta(hours=config.FOLLOWUP_AFTER_HOURS)
     done = 0
     try:
         async for d in client.iter_dialogs(limit=config.FOLLOWUP_DIALOGS_SCAN):
