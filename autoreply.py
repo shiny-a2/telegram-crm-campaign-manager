@@ -37,6 +37,11 @@ def _within_hours():
     return config.AUTOREPLY_HOUR_START <= h < config.AUTOREPLY_HOUR_END
 
 
+def _within_followup_hours():
+    h = datetime.datetime.now(_TEHRAN).hour
+    return config.FOLLOWUP_HOUR_START <= h < config.FOLLOWUP_HOUR_END
+
+
 def _post_brain_sync(messages):
     body = json.dumps({"messages": messages, "user_prompt": "", "max_tokens": 800}).encode("utf-8")
     req = urllib.request.Request(
@@ -117,6 +122,7 @@ def register(client):
             # درجا جواب بده؛ مگر اپراتور اخیراً واردِ چت شده باشد → آن‌وقت تأخیر (پنجرهٔ اپراتور)
             op_active = (time.monotonic() - _operator_active.get(event.chat_id, 0)) < config.OPERATOR_ACTIVE_WINDOW
             delay = config.REPLY_GRACE_SEC if op_active else 0
+            print(f"[autoreply] DM از «{name or event.chat_id}» → زمان‌بندیِ پاسخ (delay={delay}s)")
             _cancel(event.chat_id)
             _pending[event.chat_id] = asyncio.create_task(_delayed_reply(client, event.chat_id, name, delay))
         except Exception as e:  # noqa: BLE001
@@ -142,7 +148,7 @@ def register(client):
 # ---------- فالوآپِ مشتریانِ بی‌پیگیری ----------
 async def followup_scan(client):
     """گفتگوهای خصوصیِ ساکت با سابقهٔ تعامل را یک‌بار محترمانه پیگیری می‌کند."""
-    if db.get_meta("followup") != "on" or not _within_hours() or db.get_meta("account_locked") == "1":
+    if db.get_meta("followup") != "on" or not _within_followup_hours() or db.get_meta("account_locked") == "1":
         return 0
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=config.FOLLOWUP_AFTER_HOURS)
     done = 0

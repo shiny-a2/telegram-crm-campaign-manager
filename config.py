@@ -79,8 +79,11 @@ BRAIN_CHAT_URL = _get("BRAIN_CHAT_URL", "http://127.0.0.1:8090/api/chat")
 SALE_BRAIN_TOKEN = _get("SALE_BRAIN_TOKEN", "")
 REPLY_GRACE_SEC = _int("REPLY_GRACE_SEC", 90)        # پنجرهٔ اپراتور: اگر اپراتور وارد شده بود و تا این مدت جواب نداد، ربات وارد می‌شود
 OPERATOR_ACTIVE_WINDOW = _int("OPERATOR_ACTIVE_WINDOW", 1800)  # تا این مدت بعد از پیامِ اپراتور، چت در حالتِ «تأخیری» می‌ماند (پیش‌فرض ۳۰ دقیقه)
-AUTOREPLY_HOUR_START = _int("AUTOREPLY_HOUR_START", 8)
+# پاسخِ خودکار واکنشی است → پیش‌فرض ۲۴/۷. فالوآپ پیام‌رسانِ پیش‌قدم است → فقط در روز.
+AUTOREPLY_HOUR_START = _int("AUTOREPLY_HOUR_START", 0)
 AUTOREPLY_HOUR_END = _int("AUTOREPLY_HOUR_END", 24)
+FOLLOWUP_HOUR_START = _int("FOLLOWUP_HOUR_START", 9)
+FOLLOWUP_HOUR_END = _int("FOLLOWUP_HOUR_END", 22)
 HISTORY_LIMIT = _int("HISTORY_LIMIT", 14)            # چند پیامِ آخرِ گفتگو به مغز داده شود
 MAX_AUTOREPLY_CHARS = _int("MAX_AUTOREPLY_CHARS", 3800)  # زیرِ سقفِ ۴۰۹۶ تلگرام (لیستِ محصول جا شود)
 # فالوآپِ مشتریانِ بی‌پیگیری
