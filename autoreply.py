@@ -36,8 +36,14 @@ _FOLLOWUP_TEXT = (
     "با کمالِ میل همین‌جا راهنماییتون می‌کنم 🙏"
 )
 
-_INTERIM_PRODUCT = "چشم 🔎 اجازه بدید بهترین گزینه‌ها رو از گالری براتون پیدا کنم…"
-_INTERIM_GENERAL = "چشم 🙏 یک لحظه، همین الان بررسی می‌کنم…"
+_INTERIM_PRODUCTS = [
+    "چشم 🔎 اجازه بدید بهترین گزینه‌ها رو از گالری براتون پیدا کنم…",
+    "الان از بینِ مدل‌ها بهترین‌ها رو براتون می‌چینم 👌 یه لحظه…",
+    "چند گزینهٔ خوب و مناسب براتون دارم 🌟 همین الان میارمشون…",
+]
+_INTERIM_IMAGE = "عکستون رو دیدم 👌 دارم دقیق بررسیش می‌کنم…"
+_INTERIM_VOICE = "صداتون رو شنیدم 🎧 یه لحظه تا بررسی کنم…"
+_INTERIM_GENERAL = "چشم 🙏 یه لحظه، همین الان بررسی می‌کنم…"
 _GREETINGS = {"سلام", "درود", "سلام علیکم", "خوبی", "چطوری", "ممنون", "مرسی", "باشه",
               "چشم", "بله", "نه", "ok", "hi", "hello", "سلام وقت بخیر", "وقت بخیر"}
 _PRODUCT_HINTS = ("ساعت", "قیمت", "مدل", "رنگ", "برند", "اسپرت", "کلاسیک", "مردانه", "زنانه",
@@ -276,10 +282,16 @@ async def _delayed_reply(client, chat_id, name, delay):
         history = await _history(client, chat_id)
         if not is_photo and (not history or history[-1]["role"] != "user"):
             return  # آخرین پیام از مشتری نیست (یعنی یک نفر جواب داده)
-        # پیامِ ویتینگ هنگامِ جستجو/پردازشِ عکس (نه برای احوال‌پرسیِ کوتاه)
+        # پیامِ ویتینگ متناسب با نوعِ درخواست (عکس/وویس/محصول/عمومی) — نه برای احوال‌پرسیِ کوتاه
         _lu = history[-1]["content"] if history else ""
-        if is_photo or _looks_product(_lu):
-            await _send_interim(client, chat_id, _INTERIM_PRODUCT)
+        is_voice = bool(last_msg and not getattr(last_msg, "out", False)
+                        and (getattr(last_msg, "voice", None) or getattr(last_msg, "audio", None)))
+        if is_photo:
+            await _send_interim(client, chat_id, _INTERIM_IMAGE)
+        elif is_voice:
+            await _send_interim(client, chat_id, _INTERIM_VOICE)
+        elif _looks_product(_lu):
+            await _send_interim(client, chat_id, random.choice(_INTERIM_PRODUCTS))
         elif not _is_smalltalk(_lu):
             await _send_interim(client, chat_id, _INTERIM_GENERAL)
         if is_photo:  # عکسِ ساعت/رسید → تشخیصِ تصویری با مغز (vision)
