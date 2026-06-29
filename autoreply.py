@@ -73,11 +73,13 @@ _TRANSCRIBE_URL = config.BRAIN_CHAT_URL.replace("/api/chat", "/api/transcribe")
 _VISION_URL = config.BRAIN_CHAT_URL.replace("/api/chat", "/api/vision")
 
 
-def _post_brain_sync(messages, reply_context=None):
+def _post_brain_sync(messages, reply_context=None, customer=None):
     payload = {"messages": messages, "user_prompt": "", "max_tokens": 800,
                "cards_as_text": False}  # کارت‌ها را ساختاریافته بگیر (خودمان عکس می‌فرستیم)
     if reply_context:
         payload["reply_context"] = reply_context
+    if customer:
+        payload["customer"] = customer
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         config.BRAIN_CHAT_URL, data=body, method="POST",
@@ -97,9 +99,9 @@ def _post_transcribe_sync(audio_b64, filename):
         return (json.loads(r.read().decode("utf-8")).get("text") or "").strip()
 
 
-async def _ask_brain(messages, reply_context=None):
+async def _ask_brain(messages, reply_context=None, customer=None):
     try:
-        return await asyncio.to_thread(_post_brain_sync, messages, reply_context)
+        return await asyncio.to_thread(_post_brain_sync, messages, reply_context, customer)
     except Exception as e:  # noqa: BLE001
         print(f"[autoreply] خطای مغز: {type(e).__name__}: {e}")
         return {}
@@ -304,7 +306,7 @@ async def _delayed_reply(client, chat_id, name, delay):
                                      {"channel": "userbot", "id": str(chat_id), "name": name})
         else:
             reply_ctx = await _reply_card_context(client, chat_id)  # ریپلای‌به‌کارت؟ → همان محصول
-            resp = await _ask_brain(history, reply_ctx)
+            resp = await _ask_brain(history, reply_ctx, {"channel": "userbot", "id": str(chat_id), "name": name})
         text = (resp.get("text") or "").strip()
         cards = resp.get("cards") or []
         if not text and not cards:
