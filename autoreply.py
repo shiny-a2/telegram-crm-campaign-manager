@@ -16,6 +16,7 @@ import time
 import urllib.request
 
 from telethon import events
+from telethon.tl.types import InputMediaPhotoExternal
 
 import clock
 import config
@@ -215,17 +216,18 @@ async def _send_card(client, chat_id, c):
     _bot_recent_send[chat_id] = time.monotonic()
     try:
         if img:
-            await client.send_file(chat_id, file=img, caption=cap, force_document=False)
+            # تلگرام خودش URL را fetch کند (مثلِ رباتِ رسمی) تا webp را هم درست به عکس تبدیل کند
+            await client.send_file(chat_id, file=InputMediaPhotoExternal(img), caption=cap)
         else:
             await client.send_message(chat_id, cap, link_preview=False)
     except Exception as e:  # noqa: BLE001
         print(f"[autoreply] ارسالِ کارت ناموفق: {type(e).__name__}: {e}")
-        try:
-            await client.send_message(chat_id, cap, link_preview=False)  # fallbackِ متنی (نام/قیمت/لینک)
+        try:  # fallbackِ متنی: نام/قیمت + لینک (تا حداقل اطلاعات برسد)
+            await client.send_message(chat_id, cap, link_preview=False)
         except Exception:  # noqa: BLE001
             pass
     _bot_recent_send[chat_id] = time.monotonic()
-    await asyncio.sleep(1.0)  # فاصله تا تلگرام کارت‌ها را آلبوم/گروه نکند (هر کارت کپشنِ خودش)
+    await asyncio.sleep(0.6)  # فاصلهٔ کوچک بین کارت‌ها
 
 
 async def _send_interim(client, chat_id, text):
