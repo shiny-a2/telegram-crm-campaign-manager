@@ -48,9 +48,12 @@ def _within_followup_hours():
 _TRANSCRIBE_URL = config.BRAIN_CHAT_URL.replace("/api/chat", "/api/transcribe")
 
 
-def _post_brain_sync(messages):
-    body = json.dumps({"messages": messages, "user_prompt": "", "max_tokens": 800,
-                       "cards_as_text": False}).encode("utf-8")  # کارت‌ها را ساختاریافته بگیر (خودمان عکس می‌فرستیم)
+def _post_brain_sync(messages, reply_context=None):
+    payload = {"messages": messages, "user_prompt": "", "max_tokens": 800,
+               "cards_as_text": False}  # کارت‌ها را ساختاریافته بگیر (خودمان عکس می‌فرستیم)
+    if reply_context:
+        payload["reply_context"] = reply_context
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         config.BRAIN_CHAT_URL, data=body, method="POST",
         headers={"Content-Type": "application/json", "X-SB-Token": config.SALE_BRAIN_TOKEN},
@@ -69,12 +72,40 @@ def _post_transcribe_sync(audio_b64, filename):
         return (json.loads(r.read().decode("utf-8")).get("text") or "").strip()
 
 
-async def _ask_brain(messages):
+async def _ask_brain(messages, reply_context=None):
     try:
-        return await asyncio.to_thread(_post_brain_sync, messages)
+        return await asyncio.to_thread(_post_brain_sync, messages, reply_context)
     except Exception as e:  # noqa: BLE001
         print(f"[autoreply] خطای مغز: {type(e).__name__}: {e}")
         return {}
+
+
+async def _reply_card_context(client, chat_id):
+    """اگر آخرین پیامِ مشتری ریپلای به یک کارتِ محصول باشد، نام/لینکِ آن کارت را برمی‌گرداند
+    تا مغز همان محصول را دقیق resolve کند (نه محصولِ دیگری)."""
+    try:
+        last = await client.get_messages(chat_id, limit=1)
+        if not last:
+            return None
+        m = last[0]
+        if getattr(m, "out", False) or not getattr(m, "reply_to", None):
+            return None
+        replied = await m.get_reply_message()
+        if not replied:
+            return None
+        cap = (getattr(replied, "message", None) or getattr(replied, "text", None) or "")
+        name, url = "", ""
+        for line in cap.splitlines():
+            s = line.strip()
+            if s.startswith("⌚"):
+                name = s.lstrip("⌚").strip()
+            elif s.startswith("🔗"):
+                url = s.lstrip("🔗").strip()
+        if name or url:
+            return {"name": name, "url": url}
+    except Exception as e:  # noqa: BLE001
+        print(f"[autoreply] خواندنِ کارتِ ریپلای ناموفق: {type(e).__name__}: {e}")
+    return None
 
 
 async def _transcribe_msg(client, msg):
@@ -159,7 +190,8 @@ async def _delayed_reply(client, chat_id, name, delay):
         history = await _history(client, chat_id)
         if not history or history[-1]["role"] != "user":
             return  # آخرین پیام از مشتری نیست (یعنی یک نفر جواب داده)
-        resp = await _ask_brain(history)
+        reply_ctx = await _reply_card_context(client, chat_id)  # ریپلای‌به‌کارت؟ → همان محصول
+        resp = await _ask_brain(history, reply_ctx)
         text = (resp.get("text") or "").strip()
         cards = resp.get("cards") or []
         if not text and not cards:
