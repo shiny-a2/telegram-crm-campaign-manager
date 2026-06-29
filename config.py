@@ -77,7 +77,8 @@ SYNC_INTERVAL_HOURS = _int("SYNC_INTERVAL_HOURS", 6)
 # مغز را از طریقِ اندپوینتِ تاریخچه‌آگاهِ /api/chat صدا می‌زند (نیاز به توکنِ sale-brain).
 BRAIN_CHAT_URL = _get("BRAIN_CHAT_URL", "http://127.0.0.1:8090/api/chat")
 SALE_BRAIN_TOKEN = _get("SALE_BRAIN_TOKEN", "")
-REPLY_GRACE_SEC = _int("REPLY_GRACE_SEC", 90)        # پنجرهٔ اپراتور: اگر تا این مدت آدم جواب نداد، ربات وارد می‌شود
+REPLY_GRACE_SEC = _int("REPLY_GRACE_SEC", 90)        # پنجرهٔ اپراتور: اگر اپراتور وارد شده بود و تا این مدت جواب نداد، ربات وارد می‌شود
+OPERATOR_ACTIVE_WINDOW = _int("OPERATOR_ACTIVE_WINDOW", 1800)  # تا این مدت بعد از پیامِ اپراتور، چت در حالتِ «تأخیری» می‌ماند (پیش‌فرض ۳۰ دقیقه)
 AUTOREPLY_HOUR_START = _int("AUTOREPLY_HOUR_START", 8)
 AUTOREPLY_HOUR_END = _int("AUTOREPLY_HOUR_END", 24)
 HISTORY_LIMIT = _int("HISTORY_LIMIT", 14)            # چند پیامِ آخرِ گفتگو به مغز داده شود

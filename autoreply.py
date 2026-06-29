@@ -1,8 +1,8 @@
 """پاسخِ خودکارِ دایرکتِ تلگرام با مغزِ فروش (روی همان یوزرباتِ سندر).
 
 - تاریخچه‌آگاه: چند پیامِ آخرِ گفتگو را به مغز (/api/chat) می‌دهد تا آگاهانه جواب دهد.
-- گاردِ اپراتور: بعد از پیامِ مشتری، REPLY_GRACE_SEC ثانیه صبر می‌کند؛ اگر «آدم» (اپراتور) جواب داد،
-  ربات عقب می‌کشد؛ اگر کسی جواب نداد، ربات وارد می‌شود و گفتگو را ادامه می‌دهد.
+- درجا جواب می‌دهد؛ مگر اپراتور اخیراً واردِ چت شده باشد — آن‌وقت REPLY_GRACE_SEC ثانیه صبر می‌کند
+  تا اگر اپراتور جواب نداد، ربات وارد شود (اولویت با اپراتور تا OPERATOR_ACTIVE_WINDOW).
 - فالوآپ: مشتریانِ بی‌پیگیری (گفتگوی ساکت) را یک‌بار و محترمانه پیگیری می‌کند.
 """
 from __future__ import annotations
@@ -21,8 +21,9 @@ import db
 
 _TEHRAN = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
 
-_pending = {}          # chat_id → asyncio.Task (پاسخِ زمان‌بندی‌شده)
-_bot_recent_send = {}  # chat_id → monotonic زمانِ آخرین ارسالِ خودِ ربات (برای تشخیص از اپراتور)
+_pending = {}            # chat_id → asyncio.Task (پاسخِ زمان‌بندی‌شده)
+_bot_recent_send = {}    # chat_id → monotonic زمانِ آخرین ارسالِ خودِ ربات (برای تشخیص از اپراتور)
+_operator_active = {}    # chat_id → monotonic زمانِ آخرین پیامِ اپراتورِ انسانی (→ حالتِ تأخیری)
 
 _FOLLOWUP_TEXT = (
     "سلام مجدد 🌟 از فروشگاهِ نمونه.\n"
@@ -66,9 +67,10 @@ async def _history(client, chat_id):
     return out
 
 
-async def _delayed_reply(client, chat_id, name):
+async def _delayed_reply(client, chat_id, name, delay):
     try:
-        await asyncio.sleep(config.REPLY_GRACE_SEC)  # پنجرهٔ اپراتور
+        if delay > 0:
+            await asyncio.sleep(delay)  # حالتِ تأخیری (اپراتور واردِ چت شده) — پنجرهٔ اپراتور
     except asyncio.CancelledError:
         return
     _pending.pop(chat_id, None)
@@ -112,8 +114,11 @@ def register(client):
             if not sender or getattr(sender, "bot", False) or getattr(sender, "is_self", False):
                 return
             name = (getattr(sender, "first_name", "") or getattr(sender, "username", "") or "").strip()
-            _cancel(event.chat_id)  # پیامِ تازه → زمان‌بندیِ تازه (گریسِ اپراتور)
-            _pending[event.chat_id] = asyncio.create_task(_delayed_reply(client, event.chat_id, name))
+            # درجا جواب بده؛ مگر اپراتور اخیراً واردِ چت شده باشد → آن‌وقت تأخیر (پنجرهٔ اپراتور)
+            op_active = (time.monotonic() - _operator_active.get(event.chat_id, 0)) < config.OPERATOR_ACTIVE_WINDOW
+            delay = config.REPLY_GRACE_SEC if op_active else 0
+            _cancel(event.chat_id)
+            _pending[event.chat_id] = asyncio.create_task(_delayed_reply(client, event.chat_id, name, delay))
         except Exception as e:  # noqa: BLE001
             print(f"[autoreply] هندلرِ ورودی: {type(e).__name__}: {e}")
 
@@ -125,7 +130,9 @@ def register(client):
             last = _bot_recent_send.get(event.chat_id, 0)
             if time.monotonic() - last < 8:  # ارسالِ خودِ ربات → نادیده
                 return
-            _cancel(event.chat_id)  # «آدم» (اپراتور) جواب داد → ربات عقب می‌کشد
+            # «آدم» (اپراتور) واردِ چت شد → چت تأخیری می‌شود و پاسخِ معلق لغو می‌شود
+            _operator_active[event.chat_id] = time.monotonic()
+            _cancel(event.chat_id)
         except Exception as e:  # noqa: BLE001
             print(f"[autoreply] هندلرِ خروجی: {type(e).__name__}: {e}")
 
