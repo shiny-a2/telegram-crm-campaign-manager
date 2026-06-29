@@ -426,6 +426,15 @@ def is_optout(phone) -> bool:
     ).fetchone() is not None
 
 
+def tx_status(key):
+    """وضعیتِ یک پیامِ تراکنشی بر اساسِ کلید (برای بازخوردِ تحویل به سفارش‌بات)."""
+    key = (key or "").strip()
+    if not key:
+        return None
+    r = conn().execute("SELECT status FROM tx_queue WHERE k=?", (key,)).fetchone()
+    return r["status"] if r else None
+
+
 def tx_stats():
     return {r["status"]: r["n"] for r in conn().execute(
         "SELECT status, COUNT(*) AS n FROM tx_queue GROUP BY status"
@@ -510,3 +519,32 @@ def recent_sends(limit=20):
         (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------- لیستِ «بدونِ تلگرام» (برای ارسالِ بعدی در واتساپ) ----------
+def no_telegram_contacts(limit=0):
+    """مخاطبینی که تلگرام نداشتند (status='no_telegram') — لیستِ جدا برای واتساپ.
+    منبعِ مستقیمِ ماژولِ ارسالِ گروهیِ واتساپ است."""
+    q = ("SELECT phone, name FROM contacts WHERE status='no_telegram' "
+         "AND phone IS NOT NULL AND TRIM(phone)!='' ORDER BY id")
+    if limit and int(limit) > 0:
+        q += f" LIMIT {int(limit)}"
+    return [{"phone": r["phone"], "name": r["name"] or ""} for r in conn().execute(q).fetchall()]
+
+
+def no_telegram_count():
+    return conn().execute(
+        "SELECT COUNT(*) AS n FROM contacts WHERE status='no_telegram' AND phone IS NOT NULL AND TRIM(phone)!=''"
+    ).fetchone()["n"]
+
+
+def export_no_telegram_csv(path):
+    """لیستِ «بدونِ تلگرام» را در CSV (phone,name) می‌نویسد؛ خروجی: تعداد."""
+    import csv
+    rows = no_telegram_contacts()
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["phone", "name"])
+        for r in rows:
+            w.writerow([r["phone"], r["name"]])
+    return len(rows)

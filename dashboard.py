@@ -59,7 +59,22 @@ async def api_state(request: Request):
         "followup": db.get_meta("followup", "off"),
         "autoreply_today": db.autoreply_today(),
         "autoreplies": db.recent_autoreplies(15),
+        "no_telegram_count": db.no_telegram_count(),
     }
+
+
+@app.get("/api/export/no-telegram")
+async def api_export_no_telegram(request: Request):
+    """لیستِ «بدونِ تلگرام» را به‌صورت CSV می‌دهد (برای ارسالِ بعدی در واتساپ)."""
+    g = _guard(request)
+    if g:
+        return g
+    import os
+
+    from fastapi.responses import FileResponse
+    path = os.path.join("data", "no_telegram.csv")
+    await asyncio.to_thread(db.export_no_telegram_csv, path)
+    return FileResponse(path, filename="no_telegram.csv", media_type="text/csv")
 
 
 @app.post("/api/settings")
@@ -123,6 +138,16 @@ async def api_tx(request: Request):
     return {"ok": True, "added": status == "added", "exists": status == "exists", "status": status, "tx": db.tx_stats()}
 
 
+@app.get("/api/tx/status")
+async def api_tx_status(request: Request):
+    """وضعیتِ یک پیامِ تراکنشی بر اساسِ کلید (بازخوردِ تحویل به سفارش‌بات)."""
+    g = _guard(request)
+    if g:
+        return g
+    key = request.query_params.get("key", "")
+    return {"ok": True, "status": db.tx_status(key)}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     if not _authed(request):
@@ -155,7 +180,7 @@ button{margin-top:12px;padding:10px 20px;border:none;border-radius:8px;backgroun
 _DASH_HTML = r"""<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>داشبورد پیام‌رسانی نمونه</title>
+<title>داشبورد پیام‌رسانی</title>
 <style>
 :root{--gold:#caa15a;--bg:#0e0e10;--card:#17171b;--bd:#2a2a30;--mut:#9a9aa3}
 *{box-sizing:border-box}
@@ -189,7 +214,7 @@ th{color:var(--mut);font-weight:normal}
 .fld input{width:130px;padding:8px;border-radius:8px;border:1px solid var(--bd);background:#0e0e10;color:#eee;font-family:inherit;font-size:14px}
 </style></head>
 <body>
-<h1>📡 داشبورد پیام‌رسانی نمونه</h1>
+<h1>📡 داشبورد پیام‌رسانی</h1>
 <div class="sub" id="clock">—</div>
 
 <div id="banner"></div>
@@ -291,7 +316,10 @@ async function load(){
     ['از کانتکت/چت',s.account||0,'gold'],
     ['ناموفق',s.failed,'red'],['با شماره پیدا نشد',s.no_telegram,'gray'],['انصراف',s.optout,'gray']];
   document.getElementById('cards').innerHTML = cards.map(c=>
-    `<div class="card"><div class="n ${c[2]}">${c[1].toLocaleString('fa')}</div><div class="l">${c[0]}</div></div>`).join('');
+    `<div class="card"><div class="n ${c[2]}">${c[1].toLocaleString('fa')}</div><div class="l">${c[0]}</div></div>`).join('')
+    + `<div class="card" style="display:flex;flex-direction:column;justify-content:center;gap:6px">`
+    + `<a href="/api/export/no-telegram" style="color:var(--gold);font-weight:bold;text-decoration:none">⬇ دانلودِ لیستِ «بدونِ تلگرام»</a>`
+    + `<div class="l">برای ارسالِ بعدی در واتساپ (${(s.no_telegram||0).toLocaleString('fa')} نفر)</div></div>`;
 
   // پیشرفت
   document.getElementById('pbar').style.width = s.progress_pct + '%';
