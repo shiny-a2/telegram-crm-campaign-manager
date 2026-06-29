@@ -34,6 +34,22 @@ _FOLLOWUP_TEXT = (
     "با کمالِ میل همین‌جا راهنماییتون می‌کنم 🙏"
 )
 
+_INTERIM_PRODUCT = "چشم 🔎 اجازه بدید بهترین گزینه‌ها رو از گالری براتون پیدا کنم…"
+_INTERIM_GENERAL = "چشم 🙏 یک لحظه، همین الان بررسی می‌کنم…"
+_GREETINGS = {"سلام", "درود", "سلام علیکم", "خوبی", "چطوری", "ممنون", "مرسی", "باشه",
+              "چشم", "بله", "نه", "ok", "hi", "hello", "سلام وقت بخیر", "وقت بخیر"}
+_PRODUCT_HINTS = ("ساعت", "قیمت", "مدل", "رنگ", "برند", "اسپرت", "کلاسیک", "مردانه", "زنانه",
+                  "بند", "موجود", "عکس", "ویدئو", "ویدیو", "مچ", "اقساط", "گارانتی", "رفرنس", "کد")
+
+
+def _is_smalltalk(t):
+    s = (t or "").strip()
+    return len(s) < 3 or s in _GREETINGS
+
+
+def _looks_product(t):
+    return any(k in (t or "") for k in _PRODUCT_HINTS)
+
 
 def _within_hours():
     h = clock.tehran_now().hour  # ساعتِ تصحیح‌شده (ساعتِ خودِ سرور ممکن است کج باشد)
@@ -153,8 +169,12 @@ async def _transcribe_msg(client, msg):
 
 
 def _card_caption(c):
-    """کپشنِ کارتِ محصول (یوزربات دکمهٔ اینلاین ندارد؛ لینک داخلِ کپشن می‌آید)."""
-    lines = ["⌚ " + (c.get("name") or "")]
+    """کپشنِ کارتِ محصول (یوزربات دکمهٔ اینلاین ندارد؛ لینک داخلِ کپشن می‌آید).
+    تضمین: خطِ نام فقط وقتی نام هست؛ کپشن هیچ‌وقت فقط «⌚ »ِ خالی نمی‌شود."""
+    lines = []
+    name = (c.get("name") or "").strip()
+    if name:
+        lines.append("⌚ " + name)
     if c.get("on_sale") and c.get("sale_price_label"):
         reg = c.get("regular_price_label", "")
         lines.append(f"🔖 {c['sale_price_label']}" + (f" (قبلاً {reg})" if reg else "") + " ✨")
@@ -171,20 +191,32 @@ def _card_caption(c):
 
 async def _send_card(client, chat_id, c):
     cap = _card_caption(c)
+    if not cap.strip():
+        return  # کارتِ بی‌محتوا (بدونِ نام/قیمت/لینک) را اصلاً نفرست
     img = c.get("image")
     _bot_recent_send[chat_id] = time.monotonic()
     try:
         if img:
-            await client.send_file(chat_id, file=img, caption=cap)
+            await client.send_file(chat_id, file=img, caption=cap, force_document=False)
         else:
             await client.send_message(chat_id, cap, link_preview=False)
     except Exception as e:  # noqa: BLE001
         print(f"[autoreply] ارسالِ کارت ناموفق: {type(e).__name__}: {e}")
         try:
-            await client.send_message(chat_id, cap, link_preview=False)  # fallbackِ متنی
+            await client.send_message(chat_id, cap, link_preview=False)  # fallbackِ متنی (نام/قیمت/لینک)
         except Exception:  # noqa: BLE001
             pass
-    await asyncio.sleep(0.4)  # فاصلهٔ کوچک بین کارت‌ها
+    _bot_recent_send[chat_id] = time.monotonic()
+    await asyncio.sleep(1.0)  # فاصله تا تلگرام کارت‌ها را آلبوم/گروه نکند (هر کارت کپشنِ خودش)
+
+
+async def _send_interim(client, chat_id, text):
+    """پیامِ «در حال بررسی» قبل از صدا زدنِ مغز (تا مشتری منتظر نماند)."""
+    _bot_recent_send[chat_id] = time.monotonic()
+    try:
+        await client.send_message(chat_id, text, link_preview=False)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def _history(client, chat_id):
@@ -222,7 +254,15 @@ async def _delayed_reply(client, chat_id, name, delay):
         last_msg = last_list[0] if last_list else None
         is_photo = bool(last_msg and not getattr(last_msg, "out", False) and getattr(last_msg, "photo", None))
         history = await _history(client, chat_id)
-        if is_photo:  # عکسِ ساعت → تشخیصِ تصویری با مغز (vision)
+        if not is_photo and (not history or history[-1]["role"] != "user"):
+            return  # آخرین پیام از مشتری نیست (یعنی یک نفر جواب داده)
+        # پیامِ ویتینگ هنگامِ جستجو/پردازشِ عکس (نه برای احوال‌پرسیِ کوتاه)
+        _lu = history[-1]["content"] if history else ""
+        if is_photo or _looks_product(_lu):
+            await _send_interim(client, chat_id, _INTERIM_PRODUCT)
+        elif not _is_smalltalk(_lu):
+            await _send_interim(client, chat_id, _INTERIM_GENERAL)
+        if is_photo:  # عکسِ ساعت/رسید → تشخیصِ تصویری با مغز (vision)
             img_b64 = await _download_b64(last_msg)
             if not img_b64:
                 return
@@ -230,8 +270,6 @@ async def _delayed_reply(client, chat_id, name, delay):
             ctx_hist = history[:-1] if (history and history[-1]["role"] == "user") else history
             resp = await _ask_vision(img_b64, caption, ctx_hist)
         else:
-            if not history or history[-1]["role"] != "user":
-                return  # آخرین پیام از مشتری نیست (یعنی یک نفر جواب داده)
             reply_ctx = await _reply_card_context(client, chat_id)  # ریپلای‌به‌کارت؟ → همان محصول
             resp = await _ask_brain(history, reply_ctx)
         text = (resp.get("text") or "").strip()

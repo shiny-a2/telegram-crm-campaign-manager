@@ -24,9 +24,17 @@ from telethon.tl.functions.contacts import (
 )
 from telethon.tl.types import InputPhoneContact, User
 
+import clock
 import config
 import db
 from importer import normalize_phone
+
+# فوترِ ثابتِ همهٔ پیام‌های کمپین: دعوت به فالوِ اینستاگرام + قرعه‌کشیِ ماهانه
+_IG_FOOTER = (
+    "\n\n— — —\n"
+    "🎁 پیجِ اینستاگراممون رو فالو کنید: https://instagram.com/yourstore_watchgallery\n"
+    "هر ماه قرعه‌کشی داریم و به یک نفرِ خوش‌شانس ساعت هدیه می‌دیم 🎉⌚"
+)
 
 
 def _mask(s):
@@ -75,7 +83,7 @@ _TEHRAN = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
 
 
 def _within_hours():
-    h = datetime.datetime.now(_TEHRAN).hour
+    h = clock.tehran_now().hour  # ساعتِ تصحیح‌شده (ساعتِ خودِ سرور ممکن است کج باشد)
     return config.SEND_HOUR_START <= h < config.SEND_HOUR_END
 
 
@@ -88,7 +96,7 @@ def _pause(reason):
 
 
 def _tx_within_hours():
-    h = datetime.datetime.now(_TEHRAN).hour
+    h = clock.tehran_now().hour  # ساعتِ تصحیح‌شده
     return config.TX_HOUR_START <= h < config.TX_HOUR_END
 
 
@@ -208,7 +216,7 @@ async def _send_one(client, contact):
     # نامِ پیام = نامِ تلگرامیِ خودِ شخص (اگر نبود، نام CRM)
     tg_name = (getattr(user, "first_name", "") or "").strip()
     name = tg_name or crm_name
-    text = db.render(tpl["body"], name)
+    text = db.render(tpl["body"], name) + _IG_FOOTER  # فوترِ فالوِ اینستا + قرعه‌کشی
     try:
         await client.send_message(user, text)
         db.mark_contact(contact["id"], "sent", None, tpl["id"], label, name)
@@ -288,8 +296,13 @@ async def run():
         print(f"[autoreply] راه‌اندازی ناموفق: {type(e).__name__}: {e}")
 
     burst = 0
+    await clock.refresh()  # تصحیحِ آفستِ ساعتِ سرور قبل از هر تصمیمِ ساعتی (پنجره‌ی ارسال)
+    _clock_i = 0
     while True:
         try:
+            _clock_i += 1
+            if _clock_i % 150 == 0:
+                await clock.refresh()
             db.ensure_today()
             # صفِ تراکنشیِ اولویت‌دار (بازیابیِ پرداخت) — مستقل از روشن/خاموشِ کمپین
             if _tx_allowed():
