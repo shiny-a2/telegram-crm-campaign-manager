@@ -82,9 +82,14 @@ async def _harvest_account_recipients(client):
 _TEHRAN = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
 
 
+def _in_window(h, start, end):
+    """آیا ساعتِ h داخلِ پنجره است؟ اگر start>end، پنجره دورِ نیمه‌شب می‌پیچد (مثلِ ۹ تا ۱ بامداد)."""
+    return (start <= h < end) if start <= end else (h >= start or h < end)
+
+
 def _within_hours():
     h = clock.tehran_now().hour  # ساعتِ تصحیح‌شده (ساعتِ خودِ سرور ممکن است کج باشد)
-    return config.SEND_HOUR_START <= h < config.SEND_HOUR_END
+    return _in_window(h, config.SEND_HOUR_START, config.SEND_HOUR_END)
 
 
 def _pause(reason):
@@ -97,7 +102,7 @@ def _pause(reason):
 
 def _tx_within_hours():
     h = clock.tehran_now().hour  # ساعتِ تصحیح‌شده
-    return config.TX_HOUR_START <= h < config.TX_HOUR_END
+    return _in_window(h, config.TX_HOUR_START, config.TX_HOUR_END)
 
 
 def _tx_allowed():
@@ -353,4 +358,12 @@ async def run():
                 await asyncio.sleep(5)
         except Exception as e:  # noqa: BLE001 — هیچ خطایی لوپ را نکُشد
             print(f"[sender] خطای لوپ: {type(e).__name__}: {e}")
+            # خودترمیم: اگر کلاینت قطع شده، دوباره وصل کن (وگرنه سندر و پاسخگویی هر دو می‌خوابند)
+            try:
+                if not client.is_connected():
+                    await client.connect()
+                    if await client.is_user_authorized():
+                        print("[sender] اتصالِ دوباره برقرار شد ✅")
+            except Exception as ce:  # noqa: BLE001
+                print(f"[sender] اتصالِ دوباره ناموفق: {type(ce).__name__}: {ce}")
             await asyncio.sleep(15)
