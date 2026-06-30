@@ -284,7 +284,8 @@ async def _delayed_reply(client, chat_id, name, delay):
         history = await _history(client, chat_id)
         if not is_photo and (not history or history[-1]["role"] != "user"):
             return  # آخرین پیام از مشتری نیست (یعنی یک نفر جواب داده)
-        # پیامِ ویتینگ متناسب با نوعِ درخواست (عکس/وویس/محصول/عمومی) — نه برای احوال‌پرسیِ کوتاه
+        # پیامِ ویتینگ فقط برای مواردی که واقعاً جستجوی دیتابیس/خوانشِ اطلاعات لازم دارند
+        # (عکس/وویس/پرس‌وجوی محصول) — نه برای سؤالِ عمومیِ کوتاه که درجا جواب می‌گیرد.
         _lu = history[-1]["content"] if history else ""
         is_voice = bool(last_msg and not getattr(last_msg, "out", False)
                         and (getattr(last_msg, "voice", None) or getattr(last_msg, "audio", None)))
@@ -294,8 +295,6 @@ async def _delayed_reply(client, chat_id, name, delay):
             await _send_interim(client, chat_id, _INTERIM_VOICE)
         elif _looks_product(_lu):
             await _send_interim(client, chat_id, random.choice(_INTERIM_PRODUCTS))
-        elif not _is_smalltalk(_lu):
-            await _send_interim(client, chat_id, _INTERIM_GENERAL)
         if is_photo:  # عکسِ ساعت/رسید → تشخیصِ تصویری با مغز (vision)
             img_b64 = await _download_b64(last_msg)
             if not img_b64:
