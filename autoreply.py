@@ -34,7 +34,7 @@ _client = None           # کلاینتِ Telethon (برای notifyِ نتیجه
 
 # دستورِ اپراتور برای خاموشیِ موقتِ پاسخ‌گوییِ خودکارِ همین چت: «.۳۰» یا «وقفه ۳۰» (دقیقه)
 _PAUSE_RE = re.compile(r"^\s*(?:[.٫/!]\s*(\d{1,3})|(?:وقفه|قطع|سکوت|خاموش|pause|hold)\s*(\d{1,3}))\s*$", re.I)
-_RESUME_RE = re.compile(r"^\s*(?:ادامه|روشن|resume|on)\s*$", re.I)
+_RESUME_RE = re.compile(r"^\s*[.٫/!]\s*(?:ادامه|روشن|resume|on)\s*$", re.I)
 
 
 def _parse_pause_cmd(text):
@@ -386,7 +386,11 @@ def register(client):
         try:
             if not event.is_private:
                 return
-            # دستورِ وقفه/ادامهٔ اپراتور (قبل از فیلترِ ارسالِ ربات؛ ربات هیچ‌وقت چنین چیزی نمی‌فرستد)
+            # ارسالِ خودِ ربات هیچ‌وقت دستور نیست → اول این فیلتر تا پیامِ ربات دستور تلقی/حذف نشود
+            last = _bot_recent_send.get(event.chat_id, 0)
+            if time.monotonic() - last < 8:  # ارسالِ خودِ ربات → نادیده
+                return
+            # دستورِ وقفه/ادامهٔ اپراتور (فقط پیامِ تایپ‌شدهٔ آدم به اینجا می‌رسد)
             mins = _parse_pause_cmd(event.raw_text)
             if mins is not None:
                 if mins > 0:
@@ -400,9 +404,6 @@ def register(client):
                     await event.message.delete(revoke=True)
                 except Exception as de:  # noqa: BLE001
                     print(f"[autoreply] حذفِ پیامِ دستور ناموفق: {de}")
-                return
-            last = _bot_recent_send.get(event.chat_id, 0)
-            if time.monotonic() - last < 8:  # ارسالِ خودِ ربات → نادیده
                 return
             # «آدم» (اپراتور) واردِ چت شد → چت تأخیری می‌شود و پاسخِ معلق لغو می‌شود
             _operator_active[event.chat_id] = time.monotonic()
