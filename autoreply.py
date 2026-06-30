@@ -12,6 +12,7 @@ import base64
 import datetime
 import json
 import random
+import re
 import time
 import urllib.request
 
@@ -27,8 +28,31 @@ _TEHRAN = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
 _pending = {}            # chat_id → asyncio.Task (پاسخِ زمان‌بندی‌شده)
 _bot_recent_send = {}    # chat_id → monotonic زمانِ آخرین ارسالِ خودِ ربات (برای تشخیص از اپراتور)
 _operator_active = {}    # chat_id → monotonic زمانِ آخرین پیامِ اپراتورِ انسانی (→ حالتِ تأخیری)
+_paused_until = {}       # chat_id → monotonic مهلتِ خاموشیِ دستیِ پاسخ‌گویی (دستورِ اپراتور)
 _voice_cache = {}        # message_id → متنِ ترنسکرایب‌شدهٔ وویس (تا دوباره ترنسکرایب نشود)
 _client = None           # کلاینتِ Telethon (برای notifyِ نتیجهٔ رسید از داشبورد)
+
+# دستورِ اپراتور برای خاموشیِ موقتِ پاسخ‌گوییِ خودکارِ همین چت: «.۳۰» یا «وقفه ۳۰» (دقیقه)
+_PAUSE_RE = re.compile(r"^\s*(?:[.٫/!]\s*(\d{1,3})|(?:وقفه|قطع|سکوت|خاموش|pause|hold)\s*(\d{1,3}))\s*$", re.I)
+_RESUME_RE = re.compile(r"^\s*(?:ادامه|روشن|resume|on)\s*$", re.I)
+
+
+def _parse_pause_cmd(text):
+    """عدد دقیقه را از دستورِ وقفهٔ اپراتور درمی‌آورد؛ ۰ یعنی «دوباره روشن». اگر دستور نبود None."""
+    t = (text or "").strip()
+    # ارقامِ فارسی → لاتین
+    t = t.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+    if not t:
+        return None
+    if _RESUME_RE.match(t):
+        return 0
+    m = _PAUSE_RE.match(t)
+    if not m:
+        return None
+    try:
+        return max(0, min(int(m.group(1) or m.group(2)), 720))  # سقفِ ۱۲ ساعت
+    except ValueError:
+        return None
 
 _FOLLOWUP_TEXT = (
     "سلام مجدد 🌟 از فروشگاهِ نمونه.\n"
@@ -275,6 +299,8 @@ async def _delayed_reply(client, chat_id, name, delay):
     _pending.pop(chat_id, None)
     if db.get_meta("autoreply") != "on" or not _within_hours():
         return
+    if _paused_until.get(chat_id, 0) > time.monotonic():  # وقفهٔ دستی حین خوابِ گریس
+        return
     if db.get_meta("account_locked") == "1":
         return
     try:
@@ -340,6 +366,8 @@ def register(client):
         try:
             if not event.is_private or db.get_meta("autoreply") != "on" or not _within_hours():
                 return
+            if _paused_until.get(event.chat_id, 0) > time.monotonic():  # اپراتور این چت را موقتاً دستی کرده
+                return
             sender = await event.get_sender()
             if not sender or getattr(sender, "bot", False) or getattr(sender, "is_self", False):
                 return
@@ -357,6 +385,21 @@ def register(client):
     async def _on_outgoing(event):
         try:
             if not event.is_private:
+                return
+            # دستورِ وقفه/ادامهٔ اپراتور (قبل از فیلترِ ارسالِ ربات؛ ربات هیچ‌وقت چنین چیزی نمی‌فرستد)
+            mins = _parse_pause_cmd(event.raw_text)
+            if mins is not None:
+                if mins > 0:
+                    _paused_until[event.chat_id] = time.monotonic() + mins * 60
+                    print(f"[autoreply] وقفهٔ دستی روی چت {event.chat_id}: {mins} دقیقه")
+                else:
+                    _paused_until.pop(event.chat_id, None)
+                    print(f"[autoreply] پاسخ‌گوییِ خودکارِ چت {event.chat_id} دوباره روشن شد")
+                _cancel(event.chat_id)  # هر پاسخِ معلقی لغو شود
+                try:  # حذفِ دوطرفه (revoke) تا مشتری دستور را نبیند
+                    await event.message.delete(revoke=True)
+                except Exception as de:  # noqa: BLE001
+                    print(f"[autoreply] حذفِ پیامِ دستور ناموفق: {de}")
                 return
             last = _bot_recent_send.get(event.chat_id, 0)
             if time.monotonic() - last < 8:  # ارسالِ خودِ ربات → نادیده
